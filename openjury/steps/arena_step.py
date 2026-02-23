@@ -188,6 +188,7 @@ def run_arena(config: ArenaConfig) -> ArenaResult:
             "scale_min": dim.scale_min,
             "scale_max": dim.scale_max,
             "weight": dim.weight,
+            **({"score_references": dim.score_references} if dim.score_references else {}),
         }
 
     # ── 10. Assemble ArenaResult ─────────────────────────────────

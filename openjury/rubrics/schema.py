@@ -6,7 +6,7 @@ and per-completion rubric scores.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -19,6 +19,8 @@ class RubricDimension:
         scale_min: Minimum score (inclusive).
         scale_max: Maximum score (inclusive).
         weight: Optional prior weight for aggregation (not used in BT fitting).
+        score_references: Optional score anchors shown to the judge in the prompt.
+            Mapping ``score -> description`` (e.g. ``{7: "...", 5: "...", 3: "...", 1: "..."}``).
     """
 
     name: str
@@ -26,13 +28,41 @@ class RubricDimension:
     scale_min: int = 1
     scale_max: int = 10
     weight: float = 1.0
+    score_references: dict[int, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.scale_min > self.scale_max:
+            raise ValueError(
+                f"Invalid rubric scale for '{self.name}': "
+                f"{self.scale_min} > {self.scale_max}"
+            )
+
+        # JSON object keys arrive as strings; normalize to ints.
+        normalized: dict[int, str] = {}
+        for raw_score, text in self.score_references.items():
+            score = int(raw_score)
+            if not (self.scale_min <= score <= self.scale_max):
+                raise ValueError(
+                    f"Score reference {score} for '{self.name}' is outside "
+                    f"the configured scale [{self.scale_min}, {self.scale_max}]"
+                )
+            normalized[score] = str(text).strip()
+        self.score_references = normalized
 
     def prompt_block(self) -> str:
         """Render this dimension as a scoring instruction for the judge."""
-        return (
+        base = (
             f"**{self.name.title()}** ({self.scale_min}–{self.scale_max}): "
             f"{self.description}"
         )
+        if not self.score_references:
+            return base
+
+        refs = "\n".join(
+            f"   - {score}: {self.score_references[score]}"
+            for score in sorted(self.score_references.keys(), reverse=True)
+        )
+        return f"{base}\n   Score references:\n{refs}"
 
 
 @dataclass
