@@ -1,0 +1,42 @@
+{
+  "dataset": "alpaca-eval",
+  "n_instructions": 20,
+
+  "models": [
+    "VLLM/Qwen/Qwen2.5-0.5B-Instruct",
+    "VLLM/Qwen/Qwen2.5-1.5B-Instruct",
+    "AlpacaEval/claude-3-opus-20240229",
+    "AlpacaEval/gpt-4-turbo-2024-04-09"
+  ],
+
+  "judge": {
+    "model": "VLLM/Qwen/Qwen3-32B",
+    "gpus": 2,
+    "mode": "samplewise",
+    "max_tokens": 2048
+  },
+
+  "rubric": "default",
+
+  "matchmaker": {
+    "strategy": "balanced_random",
+    "n_matches": 20
+
+  },
+
+  "generation": {
+    "max_tokens": 4096,
+    "ignore_cache": false,
+    "ignore_score_cache": false
+  },
+
+  "output_dir": "results/arena/alpaca-eval-arena",
+
+  "ratings": {
+    "bt_regularization": 0.01,
+    "elo_k": 32.0
+  },
+
+  "include_completions": false,
+  "include_raw_judge": false
+}

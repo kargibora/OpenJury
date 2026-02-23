@@ -1,0 +1,41 @@
+{
+  "dataset": "alpaca-eval",
+  "n_instructions": 50,
+
+  "models": [
+      "VLLM/Qwen/Qwen2.5-0.5B-Instruct",
+      "VLLM/Qwen/Qwen2.5-1.5B-Instruct"
+  ],
+
+  "judge": {
+    "model": "VLLM/Qwen/Qwen3-32B",
+    "gpus": 2,
+    "mode": "samplewise",
+    "max_tokens": 2048,
+    "enable_thinking": false
+  },
+
+  "rubric": "default",
+
+  "matchmaker": {
+    "strategy": "random_pairs",
+    "n_matches": 20
+
+  },
+
+  "generation": {
+    "max_tokens": 4096,
+    "ignore_cache": false,
+    "ignore_score_cache": false
+  },
+
+  "output_dir": "results/arena/2model-battle",
+
+  "ratings": {
+    "bt_regularization": 0.01,
+    "elo_k": 32.0
+  },
+
+  "include_completions": false,
+  "include_raw_judge": false
+}
