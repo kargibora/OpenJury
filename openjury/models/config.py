@@ -113,6 +113,14 @@ class VLLMConfig(ModelConfig):
             "force it off."
         ),
     )
+    chat_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit Jinja chat template override for vLLM. "
+            "If provided, forces ``LLM.chat()`` with this template even "
+            "when the tokenizer does not define one."
+        ),
+    )
 
 
 class OpenAIConfig(ModelConfig):

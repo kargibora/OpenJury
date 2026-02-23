@@ -19,8 +19,10 @@ Example::
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import Any
 
+from openjury._logging import logger
 from openjury.models.config import VLLMConfig, ModelConfig
 from openjury.models.registry import ModelRegistry
 
@@ -68,13 +70,28 @@ def _to_messages(input_item: Any) -> list[dict]:
     raise ValueError(f"Unsupported input type: {type(input_item)}")
 
 
+def _to_raw_text(input_item: Any) -> str:
+    """Extract raw text for ``llm.generate()`` fallback (base models)."""
+    if isinstance(input_item, str):
+        return input_item
+    if hasattr(input_item, "to_string"):
+        return input_item.to_string()
+    if isinstance(input_item, list) and input_item:
+        if isinstance(input_item[0], dict):
+            return "\n".join(str(msg.get("content", "")) for msg in input_item)
+        if isinstance(input_item[0], tuple):
+            return "\n".join(str(content) for _, content in input_item)
+    raise ValueError(f"Cannot extract raw text from: {type(input_item)}")
+
+
 @ModelRegistry.register("VLLM")
 class VLLMBackend:
-    """VLLM backend using ``LLM.chat()`` for correct chat template handling.
+    """VLLM backend with chat-template auto-detection and fallback support.
 
-    Unlike LangChain's VLLM wrapper which uses ``generate()``, this uses
-    ``chat()`` which applies the model's chat template (``<|im_start|>``,
-    ``<think>`` tags, etc.) correctly.
+    Uses ``LLM.chat()`` when a chat template is available (tokenizer-defined
+    or explicitly supplied via ``config.chat_template``). Falls back to
+    ``LLM.generate()`` for base/pretrained models that do not define a chat
+    template.
 
     Args:
         model_name: HuggingFace model ID or local path to cached weights.
@@ -164,6 +181,33 @@ class VLLMBackend:
 
         self.sampling_params = SamplingParams(**sampling_kwargs)
 
+        # Chat-template mode selection:
+        # 1) explicit config.chat_template → force chat() with that template
+        # 2) tokenizer-provided template → chat()
+        # 3) no template → generate() fallback (base/pretrained models)
+        self.chat_template = config.chat_template
+        if self.chat_template:
+            self._use_generate = False
+            logger.info(
+                "VLLM using explicit chat template override for [model]%s[/model]",
+                model_name,
+            )
+        else:
+            tokenizer = self.llm.get_tokenizer()
+            if not getattr(tokenizer, "chat_template", None):
+                warnings.warn(
+                    f"Model '{model_name}' tokenizer does not define a chat template. "
+                    "Falling back to llm.generate() (no chat formatting). "
+                    "Provide VLLMConfig(chat_template=...) to force chat mode.",
+                )
+                self._use_generate = True
+            else:
+                self._use_generate = False
+                logger.info(
+                    "VLLM using tokenizer chat template for [model]%s[/model]",
+                    model_name,
+                )
+
         # Chat template kwargs (e.g. enable_thinking for Qwen3)
         self.chat_template_kwargs: dict[str, Any] | None = None
         if config.enable_thinking is not None:
@@ -172,7 +216,7 @@ class VLLMBackend:
             }
 
     def batch(self, inputs: list, **kwargs) -> list[str]:
-        """Process a batch of inputs using ``vllm.LLM.chat()``.
+        """Process a batch of inputs using ``chat()`` or ``generate()``.
 
         Args:
             inputs: List of inputs in any supported format.
@@ -180,19 +224,24 @@ class VLLMBackend:
         Returns:
             List of generated text strings.
         """
-        messages_batch = [_to_messages(inp) for inp in inputs]
+        if self._use_generate:
+            prompts = [_to_raw_text(inp) for inp in inputs]
+            outputs = self.llm.generate(prompts, self.sampling_params)
+        else:
+            messages_batch = [_to_messages(inp) for inp in inputs]
+            chat_kwargs: dict[str, Any] = {
+                "add_generation_prompt": True,
+            }
+            if self.chat_template is not None:
+                chat_kwargs["chat_template"] = self.chat_template
+            if self.chat_template_kwargs is not None:
+                chat_kwargs["chat_template_kwargs"] = self.chat_template_kwargs
 
-        chat_kwargs: dict[str, Any] = {
-            "add_generation_prompt": True,
-        }
-        if self.chat_template_kwargs is not None:
-            chat_kwargs["chat_template_kwargs"] = self.chat_template_kwargs
-
-        outputs = self.llm.chat(
-            messages_batch,
-            self.sampling_params,
-            **chat_kwargs,
-        )
+            outputs = self.llm.chat(
+                messages_batch,
+                self.sampling_params,
+                **chat_kwargs,
+            )
         return [out.outputs[0].text for out in outputs]
 
     def invoke(self, input_item, **kwargs) -> str:
@@ -240,8 +289,6 @@ class VLLMBackend:
         """
         import gc
         import os
-
-        from openjury._logging import logger
 
         logger.info("Cleaning up VLLM model [model]%s[/model]", self.model_name)
 

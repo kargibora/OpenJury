@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-judge-eval"
 version = "0.2.0a0"
-description = "Config-driven LLM evaluation with swappable judges, rubrics, and arena ratings"
+description = "Open source LLM evaluation with swappable judges, rubrics, and arena ratings"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

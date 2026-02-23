@@ -65,6 +65,8 @@ class ModelEntry:
     tp: int | None = None
     quantization: str | None = None
     completions: str | None = None
+    chat_template: str | None = None
+    chat_template_file: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -87,6 +89,7 @@ class ModelEntry:
         if isinstance(raw, dict):
             known = {
                 "name", "gpus", "tp", "quantization", "completions",
+                "chat_template", "chat_template_file",
                 "max_tokens", "temperature", "top_p", "generation_kwargs",
             }
             kw = {k: v for k, v in raw.items() if k in known}
@@ -112,6 +115,8 @@ class ModelEntry:
             top_p=self.top_p,
             tensor_parallel_size=self.tensor_parallel_size,
             quantization=self.quantization,
+            chat_template=self.chat_template,
+            chat_template_file=self.chat_template_file,
             generation_kwargs=self.generation_kwargs or None,
         )
 
@@ -140,6 +145,8 @@ class JudgeConfig:
     temperature: float = 0.0       # deterministic by default
     top_p: float = 1.0             # no nucleus filtering by default
     quantization: str | None = None
+    chat_template: str | None = None
+    chat_template_file: str | None = None
     provide_explanation: bool = False
     no_swap: bool = False           # disable swap debiasing in pairwise mode
     enable_thinking: bool | None = None  # for Qwen3 thinking mode
@@ -158,6 +165,7 @@ class JudgeConfig:
             known = {
                 "model", "gpus", "tp", "mode", "max_tokens",
                 "temperature", "top_p", "quantization",
+                "chat_template", "chat_template_file",
                 "provide_explanation", "no_swap", "enable_thinking",
                 "generation_kwargs",
             }
@@ -184,6 +192,8 @@ class JudgeConfig:
             top_p=self.top_p,
             tensor_parallel_size=self.tensor_parallel_size,
             quantization=self.quantization,
+            chat_template=self.chat_template,
+            chat_template_file=self.chat_template_file,
             enable_thinking=self.enable_thinking,
             generation_kwargs=self.generation_kwargs or None,
         )
@@ -383,6 +393,7 @@ class ArenaConfig:
         models_out = []
         for m in self.models:
             if (m.gpus == 1 and not m.quantization
+                    and not m.chat_template and not m.chat_template_file
                     and not m.generation_kwargs
                     and m.temperature is None and m.top_p is None):
                 models_out.append(m.name)
@@ -393,6 +404,10 @@ class ArenaConfig:
                 }
                 if m.quantization:
                     entry["quantization"] = m.quantization
+                if m.chat_template is not None:
+                    entry["chat_template"] = m.chat_template
+                if m.chat_template_file is not None:
+                    entry["chat_template_file"] = m.chat_template_file
                 if m.temperature is not None:
                     entry["temperature"] = m.temperature
                 if m.top_p is not None:
@@ -412,6 +427,10 @@ class ArenaConfig:
         }
         if self.judge.enable_thinking is not None:
             judge_out["enable_thinking"] = self.judge.enable_thinking
+        if self.judge.chat_template is not None:
+            judge_out["chat_template"] = self.judge.chat_template
+        if self.judge.chat_template_file is not None:
+            judge_out["chat_template_file"] = self.judge.chat_template_file
         if self.judge.generation_kwargs:
             judge_out["generation_kwargs"] = self.judge.generation_kwargs
 
@@ -554,6 +573,10 @@ class AgreementConfig:
         }
         if self.judge.enable_thinking is not None:
             judge_out["enable_thinking"] = self.judge.enable_thinking
+        if self.judge.chat_template is not None:
+            judge_out["chat_template"] = self.judge.chat_template
+        if self.judge.chat_template_file is not None:
+            judge_out["chat_template_file"] = self.judge.chat_template_file
         if self.judge.generation_kwargs:
             judge_out["generation_kwargs"] = self.judge.generation_kwargs
         if self.judge.provide_explanation:

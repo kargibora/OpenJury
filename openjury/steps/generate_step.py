@@ -45,6 +45,10 @@ def main():
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9)
     parser.add_argument("--quantization", default=None)
     parser.add_argument("--gpu_devices", default=None)
+    parser.add_argument("--chat_template", default=None,
+                        help="Explicit vLLM Jinja chat template override.")
+    parser.add_argument("--chat_template_file", default=None,
+                        help="Path to a file containing a vLLM chat template override.")
     parser.add_argument("--api_base_url", default=None,
                         help="API base URL (for ChatOpenAI, OpenRouter, LiteLLM providers).")
     parser.add_argument("--api_key_env", default=None,
@@ -91,6 +95,8 @@ def main():
         gpu_memory_utilization=args.gpu_memory_utilization,
         quantization=args.quantization,
         gpu_devices=args.gpu_devices,
+        chat_template=args.chat_template,
+        chat_template_file=args.chat_template_file,
         api_base_url=args.api_base_url,
         api_key_env=args.api_key_env,
     )

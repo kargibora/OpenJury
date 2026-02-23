@@ -608,6 +608,10 @@ Examples:
             config.ignore_cache = True
         if args.ignore_score_cache:
             config.ignore_score_cache = True
+        if args.chat_template is not None:
+            config.judge.chat_template = args.chat_template
+        if args.chat_template_file is not None:
+            config.judge.chat_template_file = args.chat_template_file
     else:
         # Build config entirely from CLI args
         if not args.models or len(args.models) < 2:
@@ -628,6 +632,8 @@ Examples:
                 mode=args.judge_mode,
                 max_tokens=args.judge_max_tokens,
                 quantization=args.judge_quantization,
+                chat_template=args.chat_template,
+                chat_template_file=args.chat_template_file,
                 provide_explanation=args.provide_explanation,
                 no_swap=args.no_swap,
                 enable_thinking=args.enable_thinking if args.enable_thinking else None,

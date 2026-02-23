@@ -23,6 +23,7 @@ Example::
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from openjury.models.config import ModelConfig
@@ -68,6 +69,8 @@ def build_config_for_model(
     gpu_memory_utilization: float | None = None,
     quantization: str | None = None,
     gpu_devices: str | None = None,
+    chat_template: str | None = None,
+    chat_template_file: str | None = None,
     # API-specific (ignored for local providers)
     api_base_url: str | None = None,
     api_key_env: str | None = None,
@@ -90,6 +93,9 @@ def build_config_for_model(
         gpu_memory_utilization: VLLM GPU memory fraction.
         quantization: VLLM quantization method.
         gpu_devices: VLLM GPU device IDs.
+        chat_template: Explicit vLLM Jinja chat template override.
+        chat_template_file: Path to a file containing a vLLM chat template.
+            Ignored if ``chat_template`` is provided.
         api_base_url: API base URL (OpenAI, LiteLLM).
         api_key_env: Environment variable for API key.
         generation_kwargs: Extra sampling/API kwargs passed through to the
@@ -127,6 +133,12 @@ def build_config_for_model(
                 kwargs["quantization"] = quantization
             if gpu_devices is not None:
                 kwargs["gpu_devices"] = gpu_devices
+            if chat_template is not None:
+                kwargs["chat_template"] = chat_template
+            elif chat_template_file is not None:
+                kwargs["chat_template"] = Path(chat_template_file).read_text(
+                    encoding="utf-8"
+                )
 
         if issubclass(config_cls, OpenAIConfig):
             if api_base_url is not None:
@@ -151,6 +163,8 @@ def make_model(
     model: str,
     max_tokens: int | None = None,
     config: ModelConfig | dict | None = None,
+    chat_template: str | None = None,
+    chat_template_file: str | None = None,
 ) -> Any:
     """Create a model backend from a 'Provider/model-name' string.
 
@@ -166,6 +180,10 @@ def make_model(
         config: Optional backend-specific config. If a dict is passed, it
             will be used to construct the appropriate config object.
             If None, a default config is created with the given max_tokens.
+        chat_template: Optional vLLM chat template override. Ignored by
+            non-vLLM providers.
+        chat_template_file: Optional file path containing a vLLM chat
+            template. Ignored if ``chat_template`` is provided.
 
     Returns:
         A ModelBackend instance.
@@ -184,6 +202,26 @@ def make_model(
 
     logger.info("Loading [model]%s[/model](model=%s)", provider, model_name)
 
+    if provider == "VLLM" and (chat_template is not None or chat_template_file is not None):
+        base_kwargs: dict[str, Any] = {}
+        if isinstance(config, dict):
+            base_kwargs.update(config)
+        elif isinstance(config, ModelConfig):
+            base_kwargs.update(config.model_dump())
+        if max_tokens is not None:
+            base_kwargs["max_tokens"] = max_tokens
+
+        config = build_config_for_model(
+            model,
+            **base_kwargs,
+            chat_template=chat_template,
+            chat_template_file=chat_template_file,
+        )
+    elif isinstance(config, dict):
+        if max_tokens is not None:
+            config.setdefault("max_tokens", max_tokens)
+        config = build_config_for_model(model, **config)
+
     # Build config: only override max_tokens when explicitly provided by caller.
     # This avoids clobbering provider-specific configs (e.g. Arena/JudgeConfig).
     if config is None:
@@ -191,10 +229,6 @@ def make_model(
             config = ModelConfig(max_tokens=max_tokens)
         else:
             config = ModelConfig()
-    elif isinstance(config, dict):
-        if max_tokens is not None:
-            config.setdefault("max_tokens", max_tokens)
-        config = ModelConfig(**config)
     elif isinstance(config, ModelConfig) and max_tokens is not None:
         # Override max_tokens if explicitly passed
         config = config.model_copy(update={"max_tokens": max_tokens})

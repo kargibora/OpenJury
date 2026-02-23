@@ -161,6 +161,22 @@ def add_judge_args(parser: argparse.ArgumentParser) -> None:
              "Only affects VLLM backends that support it.",
     )
     parser.add_argument(
+        "--chat_template",
+        default=None,
+        help=(
+            "Explicit vLLM Jinja chat template override for the judge model. "
+            "Ignored by non-VLLM providers."
+        ),
+    )
+    parser.add_argument(
+        "--chat_template_file",
+        default=None,
+        help=(
+            "Path to a file containing a vLLM chat template override for the "
+            "judge model. Ignored if --chat_template is provided."
+        ),
+    )
+    parser.add_argument(
         "--gen-kwargs",
         nargs="*",
         metavar="KEY=VALUE",
