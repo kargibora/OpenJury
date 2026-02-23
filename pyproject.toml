@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-judge-eval"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0a0"
+description = "Config-driven LLM evaluation with swappable judges, rubrics, and arena ratings"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -20,7 +20,9 @@ dependencies = [
     "langchain-openai>=0.3.32",
     "langchain-together>=0.3.1",
     "matplotlib>=3.10.6",
+    "numpy>=1.26.0",
     "pandas>=2.3.2",
+    "pydantic>=2.8.0",
     "rich>=14.1.0",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
@@ -35,4 +37,14 @@ exclude = ["slurmpilot_scripts*"]
 [project.optional-dependencies]
 vllm = ["vllm==0.10.2"]
 llamacpp = ["llama-cpp-python>=0.3.0"]
+yaml = ["PyYAML>=6.0"]
 dev = ["black>=25.1.0", "pytest>=8.4.2"]
+
+[project.scripts]
+openjury-arena = "openjury.steps.arena_step:main"
+openjury-generate = "openjury.steps.generate_step:main"
+openjury-completion-cache = "openjury.completion_cache:_cli"
+openjury-score-cache = "openjury.score_cache:_cli"
+
+[tool.setuptools.package-data]
+openjury = ["prompts/*.txt"]

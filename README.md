@@ -1,3 +1,10 @@
+## Branch Status (WIP)
+
+This branch is a work in progress and intentionally diverges from the original codebase.
+It introduces a more scalable, class-based architecture to make future integrations easier and improve readability/maintainability - which is required as a standalone open source project as well as to be used by OpenEuroLLM team.
+Expect breaking changes and incomplete documentation while the refactor is in progress.
+It will try to integrate any future changes to be done to the master branch. 
+
 # OpenJury: LLM Evaluation with a Swappable Judge
 
 OpenJury is a toolkit for running head-to-head and K-model LLM evaluations with configurable judge models, rubrics, and datasets.
@@ -75,8 +82,6 @@ A model entry can be a string or an object.
 {
   "name": "VLLM/meta-llama/Llama-3.1-8B-Instruct",
   "gpus": 2,
-  "tp": 2,
-  "quantization": "fp8",
   "max_tokens": 4096
 }
 ```
@@ -93,7 +98,7 @@ You can also point to a pre-generated completions parquet file:
 ## Judge Modes
 
 - `samplewise` (default): scores each model independently on the rubric
-- `pairwise`: compares completions side-by-side
+- `pairwise`: compares completions side-by-side. 
 
 Set in config:
 
@@ -142,7 +147,7 @@ Built-in rubrics:
 - `default`
 - `coding`
 - `translation`
-- `overall`
+- `overall` (a single rubric, can be used to simulate a single-score evaluation)
 
 Use a built-in rubric:
 
