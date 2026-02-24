@@ -99,6 +99,7 @@ class VLLMBackend:
     """
 
     def __init__(self, model_name: str, config: VLLMConfig | ModelConfig | None = None):
+        # Import vllm here to avoid hard dependency for users who don't use this backend.
         import os
         from vllm import LLM, SamplingParams
 
@@ -134,7 +135,6 @@ class VLLMBackend:
                     mapped = [slurm_list[i] for i in requested]
                     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(mapped)
                 except IndexError:
-                    from openjury._logging import logger
                     logger.warning(
                         "gpu_devices=%s requests indices beyond SLURM allocation "
                         "(%s). Using gpu_devices as-is.",
