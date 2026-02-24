@@ -43,6 +43,7 @@ dev = ["black>=25.1.0", "pytest>=8.4.2"]
 [project.scripts]
 openjury-arena = "openjury.cli.arena:main"
 openjury-generate = "openjury.cli.generate:main"
+openjury-slurm = "openjury.slurm.generate_slurm:main"
 openjury-completion-cache = "openjury.cache.completions:_cli"
 openjury-score-cache = "openjury.cache.scores:_cli"
 

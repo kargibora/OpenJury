@@ -109,6 +109,43 @@ This is useful for:
 - reusing a fixed completion set across multiple judges/rubrics
 - SLURM/job-based workflows
 
+## SLURM Script Helper (Optional)
+
+Use `openjury-slurm` to generate job scripts for staged execution on SLURM clusters.
+It supports mixed execution targets (GPU jobs via `sbatch`, API models on the login node).
+
+Quick smoke test:
+
+```bash
+uv run openjury-slurm --help
+```
+
+Minimal dry-run example (generate scripts only, do not submit):
+
+```bash
+uv run openjury-slurm \
+  --dataset alpaca-eval \
+  --models VLLM/Qwen/Qwen2.5-0.5B-Instruct VLLM/Qwen/Qwen2.5-1.5B-Instruct \
+  --judge_model OpenRouter/deepseek/deepseek-chat-v3.1 \
+  --mode arena \
+  --output_dir slurm_scripts
+```
+
+This writes a per-run folder with:
+- generated job scripts (`*.sh`)
+- `arena_config.json` for the arena step
+- `submit_all.sh` orchestration script
+
+Submit later:
+
+```bash
+bash slurm_scripts/<run_name>/submit_all.sh
+```
+
+Notes:
+- `agreement` mode is temporarily disabled in this branch until a dedicated CLI entrypoint is added.
+- Cluster settings (`ACCOUNT`, `PARTITION`, `USER_WORK_DIR`, `TIME_LIMIT`) are read from environment variables or `.env`.
+
 ### Per-model entries (optional overrides)
 
 A model entry can be a string or an object.
