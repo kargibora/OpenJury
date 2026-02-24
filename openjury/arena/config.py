@@ -393,8 +393,11 @@ class ArenaConfig:
         models_out = []
         for m in self.models:
             if (m.gpus == 1 and not m.quantization
+                    and m.tp is None
+                    and m.completions is None
                     and not m.chat_template and not m.chat_template_file
                     and not m.generation_kwargs
+                    and m.max_tokens is None
                     and m.temperature is None and m.top_p is None):
                 models_out.append(m.name)
             else:
@@ -402,12 +405,18 @@ class ArenaConfig:
                     "name": m.name,
                     "gpus": m.gpus,
                 }
+                if m.tp is not None:
+                    entry["tp"] = m.tp
                 if m.quantization:
                     entry["quantization"] = m.quantization
+                if m.completions is not None:
+                    entry["completions"] = m.completions
                 if m.chat_template is not None:
                     entry["chat_template"] = m.chat_template
                 if m.chat_template_file is not None:
                     entry["chat_template_file"] = m.chat_template_file
+                if m.max_tokens is not None:
+                    entry["max_tokens"] = m.max_tokens
                 if m.temperature is not None:
                     entry["temperature"] = m.temperature
                 if m.top_p is not None:
@@ -425,12 +434,20 @@ class ArenaConfig:
             "temperature": self.judge.temperature,
             "top_p": self.judge.top_p,
         }
+        if self.judge.tp is not None:
+            judge_out["tp"] = self.judge.tp
+        if self.judge.quantization is not None:
+            judge_out["quantization"] = self.judge.quantization
         if self.judge.enable_thinking is not None:
             judge_out["enable_thinking"] = self.judge.enable_thinking
         if self.judge.chat_template is not None:
             judge_out["chat_template"] = self.judge.chat_template
         if self.judge.chat_template_file is not None:
             judge_out["chat_template_file"] = self.judge.chat_template_file
+        if self.judge.provide_explanation:
+            judge_out["provide_explanation"] = self.judge.provide_explanation
+        if self.judge.no_swap:
+            judge_out["no_swap"] = self.judge.no_swap
         if self.judge.generation_kwargs:
             judge_out["generation_kwargs"] = self.judge.generation_kwargs
 
