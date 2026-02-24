@@ -7,10 +7,10 @@ or generate on-the-fly), run the arena judge, compute ratings, and save
 Can be driven by a **config file** (JSON or YAML) or CLI arguments::
 
     # Config file (recommended for ≥3 models)
-    uv run python -m openjury.steps.arena_step --config arena.json
+    uv run python -m openjury.cli.arena --config arena.json
 
     # CLI (convenient for 2-model battles)
-    uv run python -m openjury.steps.arena_step \\
+    uv run python -m openjury.cli.arena \\
         --models VLLM/Qwen/Qwen2.5-0.5B-Instruct \\
                  VLLM/Qwen/Qwen2.5-1.5B-Instruct \\
         --judge_model VLLM/Qwen/Qwen3-32B \\
@@ -55,12 +55,12 @@ from openjury.arena.config import (
 from openjury.arena.matchmaker import get_matchmaker
 from openjury.arena.ratings import compute_ratings
 from openjury.arena.save_arena import save_arena
-from openjury.completion_cache import cache
+from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
-from openjury.generate import generate_instructions
+from openjury.pipelines.generation import generate_instructions
 from openjury.models.factory import make_model
 from openjury.rubrics import get_rubric
-from openjury.score_cache import score_cache
+from openjury.cache.scores import score_cache
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -559,17 +559,17 @@ def main():
 Examples:
 
   # Config file (recommended)
-  uv run python -m openjury.steps.arena_step --config arena.json
+  uv run python -m openjury.cli.arena --config arena.json
 
   # Inline 2-model battle
-  uv run python -m openjury.steps.arena_step \\
+  uv run python -m openjury.cli.arena \\
       --models VLLM/Qwen/Qwen2.5-0.5B-Instruct \\
                VLLM/Qwen/Qwen2.5-1.5B-Instruct \\
       --judge_model VLLM/Qwen/Qwen3-32B \\
       --dataset alpaca-eval --output_dir results/arena/
 
   # 5-model arena with budget
-  uv run python -m openjury.steps.arena_step \\
+  uv run python -m openjury.cli.arena \\
       --models M1 M2 M3 M4 M5 \\
       --judge_model OpenRouter/qwen/qwen3-235b-a22b \\
       --dataset alpaca-eval \\

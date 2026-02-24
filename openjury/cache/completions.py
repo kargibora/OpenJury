@@ -8,7 +8,7 @@ Cache key = ``(model, dataset, n_instructions)``.
 
 Quick start::
 
-    from openjury.completion_cache import cache
+    from openjury.cache.completions import cache
 
     # Look up
     df = cache.get("VLLM/Qwen/Qwen2.5-0.5B-Instruct", "alpaca-eval", n=100)
@@ -30,10 +30,10 @@ Quick start::
 
 CLI::
 
-    uv run python -m openjury.completion_cache list
-    uv run python -m openjury.completion_cache list --dataset alpaca-eval
-    uv run python -m openjury.completion_cache clear --model VLLM/Qwen/Qwen2.5-0.5B-Instruct --dataset alpaca-eval
-    uv run python -m openjury.completion_cache path --model VLLM/Qwen/Qwen2.5-0.5B-Instruct --dataset alpaca-eval --n 100
+    uv run python -m openjury.cache.completions list
+    uv run python -m openjury.cache.completions list --dataset alpaca-eval
+    uv run python -m openjury.cache.completions clear --model VLLM/Qwen/Qwen2.5-0.5B-Instruct --dataset alpaca-eval
+    uv run python -m openjury.cache.completions path --model VLLM/Qwen/Qwen2.5-0.5B-Instruct --dataset alpaca-eval --n 100
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from typing import Callable
 import pandas as pd
 
 from openjury._logging import logger
-from openjury.utils import data_root
+from openjury.common.paths import data_root
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -297,7 +297,7 @@ cache = CompletionCache()
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  CLI: ``uv run python -m openjury.completion_cache <command>``
+#  CLI: ``uv run python -m openjury.cache.completions <command>``
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -305,7 +305,7 @@ def _cli() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="openjury.completion_cache",
+        prog="openjury.cache.completions",
         description="Manage the OpenJury completion cache.",
     )
     sub = parser.add_subparsers(dest="command")

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from openjury.datasets.registry import DatasetRegistry
 from openjury.datasets.schema import EvalDataset, EvalSample
-from openjury.utils import data_root, download_hf, read_df
+from openjury.common.paths import data_root
+from openjury.io.download import download_hf
+from openjury.io.tabular import read_df
 
 
 @DatasetRegistry.register("alpaca-eval")

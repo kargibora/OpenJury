@@ -89,7 +89,8 @@ def _download_m_arenahard_v2():
 
 @_register("alpaca-eval", "AlpacaEval instruction dataset")
 def _download_alpaca_eval():
-    from openjury.utils import download_hf, data_root
+    from openjury.io.download import download_hf
+    from openjury.common.paths import data_root
 
     logger.info("Downloading alpaca-eval tables ...")
     local_path = data_root / "tables"
@@ -99,7 +100,8 @@ def _download_alpaca_eval():
 
 @_register("arena-hard", "Arena-Hard instruction dataset")
 def _download_arena_hard():
-    from openjury.utils import download_hf, data_root
+    from openjury.io.download import download_hf
+    from openjury.common.paths import data_root
 
     logger.info("Downloading arena-hard tables ...")
     local_path = data_root / "tables"
@@ -110,7 +112,7 @@ def _download_arena_hard():
 @_register("contexts", "Multilingual contexts for completion")
 def _download_contexts():
     from huggingface_hub import snapshot_download
-    from openjury.utils import data_root
+    from openjury.common.paths import data_root
 
     repo_id = "geoalgo/multilingual-contexts-to-be-completed"
     logger.info("Downloading %s ...", repo_id)

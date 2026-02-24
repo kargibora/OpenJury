@@ -5,7 +5,7 @@ fully released between models (no in-process cleanup issues).
 
 Usage::
 
-    uv run python -m openjury.steps.generate_step \\
+    uv run python -m openjury.cli.generate \\
         --model VLLM/meta-llama/Llama-3.1-70B-Instruct \\
         --dataset alpaca-eval \\
         --output /path/to/completions_A.parquet \\
@@ -22,8 +22,8 @@ import pandas as pd
 
 from openjury._logging import logger
 from openjury.cli_args import add_dataset_args
-from openjury.completion_cache import cache
-from openjury.generate import generate_instructions, generate_base
+from openjury.cache.completions import cache
+from openjury.pipelines.generation import generate_instructions, generate_base
 from openjury.instruction_dataset import load_instructions
 from openjury.models.factory import build_config_for_model
 

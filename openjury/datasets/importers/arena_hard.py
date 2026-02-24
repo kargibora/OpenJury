@@ -57,9 +57,9 @@ from typing import Any
 import pandas as pd
 
 from openjury._logging import logger
-from openjury.completion_cache import cache
+from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
-from openjury.utils import data_root
+from openjury.common.paths import data_root
 
 
 # ═════════════════════════════════════════════════════════════════════

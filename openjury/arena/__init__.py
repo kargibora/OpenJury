@@ -11,7 +11,7 @@ Quick start::
 
 Or run directly::
 
-    uv run python -m openjury.steps.arena_step --config arena.json
+    uv run python -m openjury.cli.arena --config arena.json
 """
 
 from openjury.arena.config import (

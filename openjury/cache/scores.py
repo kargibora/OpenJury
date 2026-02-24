@@ -7,13 +7,13 @@ deterministic path::
 
 Cache key = ``(judge_model, rubric_name, model, dataset, n_instructions)``.
 
-The design mirrors :mod:`openjury.completion_cache` — filesystem-based,
+The design mirrors :mod:`openjury.cache.completions` — filesystem-based,
 human-inspectable, and subsettable (``all.parquet`` can serve any ``nK``
 request).
 
 Quick start::
 
-    from openjury.score_cache import score_cache
+    from openjury.cache.scores import score_cache
 
     # Look up
     scores = score_cache.get(
@@ -36,9 +36,9 @@ Quick start::
 
 CLI::
 
-    uv run python -m openjury.score_cache list
-    uv run python -m openjury.score_cache list --dataset alpaca-eval
-    uv run python -m openjury.score_cache clear --judge VLLM/Qwen/Qwen3-32B --rubric default
+    uv run python -m openjury.cache.scores list
+    uv run python -m openjury.cache.scores list --dataset alpaca-eval
+    uv run python -m openjury.cache.scores clear --judge VLLM/Qwen/Qwen3-32B --rubric default
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ import pandas as pd
 
 from openjury._logging import logger
 from openjury.arena.config import ModelScore
-from openjury.utils import data_root
+from openjury.common.paths import data_root
 
 
 # ═════════════════════════════════════════════════════════════════════
