@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm.asyncio import tqdm
 from openjury.common.paths import data_root, set_langchain_cache
 from openjury.common.timing import Timeblock
-from openjury.io.download import download_hf, download_all
+from openjury.io.download import download_hf
 from openjury.io.tabular import read_df
 
 
@@ -118,6 +118,13 @@ def make_model(
         chat_template=chat_template,
         chat_template_file=chat_template_file,
     )
+
+
+def download_all() -> None:
+    """Compatibility wrapper for the canonical dataset pre-download API."""
+    from openjury.datasets.download import download
+
+    download()
 
 
 def cache_function_dataframe(

@@ -17,7 +17,7 @@ import pandas as pd
 from datasets import Dataset
 from langchain.prompts import ChatPromptTemplate
 
-from openjury.instruction_dataset import load_instructions
+from openjury.datasets import load_dataset
 from openjury.utils import do_inference, make_model
 from openjury.utils import set_langchain_cache
 
@@ -77,10 +77,18 @@ languages = [
 translator_model = "OpenRouter/openai/gpt-5"
 # translator_model = "OpenRouter/deepseek/deepseek-chat-v3.1"
 n_instructions = 10
-df_instructions = load_instructions(
-    "arena-hard",
-    n_instructions=n_instructions,
-)
+_ds = load_dataset("arena-hard", n=n_instructions)
+df_instructions = pd.DataFrame([
+    {
+        "instruction_index": s.instruction_id,
+        "instruction": s.instruction,
+        "question_id": s.metadata.get("question_id", ""),
+        "category": s.metadata.get("category", ""),
+        # Legacy script expects "domain"; unified loader stores this as "cluster".
+        "domain": s.metadata.get("cluster", ""),
+    }
+    for s in _ds.samples
+])
 # languages = [("fra", "French")]
 
 

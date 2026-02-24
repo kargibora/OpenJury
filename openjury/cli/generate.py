@@ -23,8 +23,8 @@ import pandas as pd
 from openjury._logging import logger
 from openjury.cli_args import add_dataset_args
 from openjury.cache.completions import cache
+from openjury.datasets import load_dataset
 from openjury.pipelines.generation import generate_instructions, generate_base
-from openjury.instruction_dataset import load_instructions
 from openjury.models.factory import build_config_for_model
 
 
@@ -74,13 +74,13 @@ def main():
             )
             return
 
-    # ── Load instructions ────────────────────────────────────────
-    instructions_df = load_instructions(
-        dataset=args.dataset, n_instructions=args.n_instructions,
+    # ── Load instructions (unified dataset API) ──────────────────
+    ds = load_dataset(args.dataset, n=args.n_instructions)
+    instructions = pd.Series(
+        [s.instruction for s in ds.samples],
+        index=[s.instruction_id for s in ds.samples],
+        name="instruction",
     )
-    instructions = instructions_df["instruction"]
-    if args.n_instructions:
-        instructions = instructions[: args.n_instructions]
 
     logger.info(
         "Generating %d completions with %s (tp=%d)",
