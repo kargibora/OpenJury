@@ -48,3 +48,8 @@ openjury-score-cache = "openjury.cache.scores:_cli"
 
 [tool.setuptools.package-data]
 openjury = ["prompts/*.txt"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

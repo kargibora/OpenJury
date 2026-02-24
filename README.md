@@ -210,6 +210,9 @@ Built-in rubrics:
 - `translation`
 - `overall` (single-dimension rubric for single-score evaluation)
 
+There is no separate legacy "single-score without rubric" mode in the current pipeline.
+Use `overall` when you want a single scalar quality score per completion.
+
 Use a built-in rubric:
 
 ```bash
