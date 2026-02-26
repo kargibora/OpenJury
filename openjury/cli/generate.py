@@ -5,7 +5,7 @@ fully released between models (no in-process cleanup issues).
 
 Usage::
 
-    uv run python -m openjury.cli.generate \\
+    uv run openjury-generate \\
         --model VLLM/meta-llama/Llama-3.1-70B-Instruct \\
         --dataset alpaca-eval \\
         --output /path/to/completions_A.parquet \\
@@ -21,22 +21,99 @@ from pathlib import Path
 import pandas as pd
 
 from openjury._logging import logger
-from openjury.cli_args import add_dataset_args
+from openjury.cli._resolvers.generate import resolve_generate_cli
+from openjury.cli._forwarding.slurm import forward_task_config_to_slurm
+from openjury.cli_args import add_dataset_args, add_dataset_selection_args
 from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
+from openjury.generate_config import GenerateConfig
 from openjury.pipelines.generation import generate_instructions, generate_base
 from openjury.models.factory import build_config_for_model
 
 
-def main():
+def _run_generate_local(cfg: GenerateConfig) -> None:
+    """Execute local generation from a resolved config."""
+    output_path = Path(cfg.output)
+    ds_opts = cfg.dataset_options
+
+    # ── Check completion cache first ─────────────────────────────
+    if not cfg.ignore_cache:
+        cached_df = cache.get(
+            cfg.model,
+            ds_opts.name,
+            ds_opts.n_instructions,
+        )
+        if cached_df is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            cached_df.to_parquet(output_path, index=False)
+            logger.info(
+                "Using cached completions → %s (%d rows)",
+                output_path, len(cached_df),
+            )
+            return
+
+    # ── Load instructions (unified dataset API) ──────────────────
+    ds = load_dataset(
+        ds_opts.name,
+        n=ds_opts.n_instructions,
+        **ds_opts.loader_kwargs(),
+    )
+    instructions = pd.Series(
+        [s.instruction for s in ds.samples],
+        index=[s.instruction_id for s in ds.samples],
+        name="instruction",
+    )
+
+    logger.info(
+        "Generating %d completions with %s (tp=%d)",
+        len(instructions), cfg.model, cfg.tensor_parallel_size,
+    )
+
+    # Build provider-appropriate config (VLLM flags are ignored for API providers)
+    model_cfg = build_config_for_model(
+        cfg.model,
+        max_tokens=cfg.max_tokens,
+        tensor_parallel_size=cfg.tensor_parallel_size,
+        gpu_memory_utilization=cfg.gpu_memory_utilization,
+        quantization=cfg.quantization,
+        gpu_devices=cfg.gpu_devices,
+        chat_template=cfg.chat_template,
+        chat_template_file=cfg.chat_template_file,
+        api_base_url=cfg.api_base_url,
+        api_key_env=cfg.api_key_env,
+    )
+
+    gen_fn = generate_base if cfg.base_model else generate_instructions
+    df = gen_fn(
+        instructions=instructions,
+        model=cfg.model,
+        truncate_input_chars=cfg.truncate_input_chars,
+        max_tokens=cfg.max_tokens,
+        use_tqdm=cfg.use_tqdm,
+        config=model_cfg,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(output_path, index=False)
+    cache.put(df, cfg.model, ds_opts.name, ds_opts.n_instructions)
+    logger.info("Saved %d completions to %s (+ cached)", len(df), output_path)
+
+
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
-        prog="generate_step",
+        prog="openjury-generate",
         description="Generate completions from a single model and save to parquet.",
     )
-    parser.add_argument("--model", required=True,
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to a JSON/YAML generate config file. CLI flags can override fields.",
+    )
+    parser.add_argument("--model", required=False,
                         help="Model spec, e.g. VLLM/meta-llama/Llama-3.1-70B-Instruct")
-    add_dataset_args(parser, dataset_required=True)
-    parser.add_argument("--output", required=True,
+    add_dataset_args(parser, dataset_required=False)
+    add_dataset_selection_args(parser)
+    parser.add_argument("--output", required=False,
                         help="Output parquet file path.")
     parser.add_argument("--max_tokens", type=int, default=4096,
                         help="Max tokens to generate per completion (default: 4096).")
@@ -58,65 +135,36 @@ def main():
                         help="Use generate_base (for fluency tasks) instead of generate_instructions.")
     parser.add_argument("--ignore_cache", action="store_true",
                         help="Force regeneration even if completions are cached.")
+    parser.add_argument(
+        "--slurm",
+        action="store_true",
+        help="Generate SLURM scripts instead of running locally (uses openjury-slurm).",
+    )
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help="With --slurm: submit generated scripts immediately.",
+    )
+    parser.add_argument(
+        "--slurm_output_dir",
+        default="slurm_scripts",
+        help="With --slurm: root directory for generated SLURM scripts (default: slurm_scripts).",
+    )
 
-    args = parser.parse_args()
-    output_path = Path(args.output)
+    args = parser.parse_args(argv)
+    resolved = resolve_generate_cli(parser, args, argv)
 
-    # ── Check completion cache first ─────────────────────────────
-    if not args.ignore_cache:
-        cached_df = cache.get(args.model, args.dataset, args.n_instructions)
-        if cached_df is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            cached_df.to_parquet(output_path, index=False)
-            logger.info(
-                "Using cached completions → %s (%d rows)",
-                output_path, len(cached_df),
+    if resolved.slurm_forward is not None:
+        if resolved.slurm_forward.warn_output_dir_semantics:
+            logger.warning(
+                "--slurm mode ignores --output (%s); completions will be generated "
+                "via openjury-slurm into its managed work/cache directories.",
+                resolved.config.output,
             )
-            return
+        forward_task_config_to_slurm("generate", resolved.config, resolved.slurm_forward)
+        return
 
-    # ── Load instructions (unified dataset API) ──────────────────
-    ds = load_dataset(args.dataset, n=args.n_instructions)
-    instructions = pd.Series(
-        [s.instruction for s in ds.samples],
-        index=[s.instruction_id for s in ds.samples],
-        name="instruction",
-    )
-
-    logger.info(
-        "Generating %d completions with %s (tp=%d)",
-        len(instructions), args.model, args.tensor_parallel_size,
-    )
-
-    # Build provider-appropriate config (VLLM flags are ignored for API providers)
-    config = build_config_for_model(
-        args.model,
-        max_tokens=args.max_tokens,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        quantization=args.quantization,
-        gpu_devices=args.gpu_devices,
-        chat_template=args.chat_template,
-        chat_template_file=args.chat_template_file,
-        api_base_url=args.api_base_url,
-        api_key_env=args.api_key_env,
-    )
-
-    # Generate
-    gen_fn = generate_base if args.base_model else generate_instructions
-    df = gen_fn(
-        instructions=instructions,
-        model=args.model,
-        truncate_input_chars=args.truncate_input_chars,
-        max_tokens=args.max_tokens,
-        use_tqdm=args.use_tqdm,
-        config=config,
-    )
-
-    # Save + cache
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
-    cache.put(df, args.model, args.dataset, args.n_instructions)
-    logger.info("Saved %d completions to %s (+ cached)", len(df), output_path)
+    _run_generate_local(resolved.config)
 
 
 if __name__ == "__main__":

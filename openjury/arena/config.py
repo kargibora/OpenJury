@@ -319,6 +319,15 @@ class ArenaConfig:
     def n_models(self) -> int:
         return len(self.models)
 
+    @property
+    def dataset_options(self):
+        """Shared dataset selection options for loaders/executors."""
+        from openjury.datasets.options import DatasetOptions
+        return DatasetOptions(
+            name=self.dataset,
+            n_instructions=self.n_instructions,
+        )
+
     # ── Loaders ──────────────────────────────────────────────────
 
     @classmethod
@@ -532,6 +541,17 @@ class AgreementConfig:
     # ── Scoring ──────────────────────────────────────────────────
     ignore_score_cache: bool = False
     truncate_instruction: int = 500
+
+    @property
+    def dataset_options(self):
+        """Shared dataset selection options for loaders/executors."""
+        from openjury.datasets.options import DatasetOptions
+        return DatasetOptions(
+            name=self.dataset,
+            n_instructions=self.n_instructions,
+            language=self.language,
+            seed=self.seed,
+        )
 
     # ── Loaders ──────────────────────────────────────────────────
 

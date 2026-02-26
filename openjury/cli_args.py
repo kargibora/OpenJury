@@ -107,6 +107,24 @@ def add_dataset_args(
     )
 
 
+def add_dataset_selection_args(parser: argparse.ArgumentParser) -> None:
+    """Optional dataset selection / filtering flags shared across tasks.
+
+    These options are only used by datasets/loaders that support them.
+    """
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="Dataset language filter (where supported, e.g. comparia/lmsys variants).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Dataset sub-sampling seed (where supported). Default: 42.",
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════
 #  Judge model
 # ═════════════════════════════════════════════════════════════════════

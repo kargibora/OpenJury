@@ -1,9 +1,10 @@
-"""Standalone pipeline steps for SLURM job chaining.
+"""CLI entrypoints for OpenJury pipelines.
 
-Each step is a self-contained script that reads/writes parquet files,
-allowing models to run in separate SLURM jobs with ``--dependency``.
+Primary public commands:
+    - ``openjury-generate``
+    - ``openjury-evaluate <task>``  (``arena``, ``agreement``)
 
-Steps:
-    - ``generate_step``: Generate completions from a single model → parquet.
-    - ``arena_step``: K-model arena evaluation (scoring, matchmaking, ratings).
+Backward-compatible aliases remain available:
+    - ``openjury-arena``
+    - ``openjury-agreement``
 """

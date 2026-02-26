@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from openjury._logging import logger
@@ -264,14 +265,43 @@ def _submit_script_remote(
         remote_dir = f"slurmpilot/jobs/{unique_name}"
         conn.run(f"mkdir -p {remote_dir}")
 
-    # Upload the script and any config files in the same directory
+    # Upload the script and any config files in the same directory.
+    # If the generated script references an absolute local *_config.json path,
+    # rewrite it to a basename so it works inside ``remote_dir``.
     script_name = script_path.name
-    _upload_file(conn, script_path, f"{remote_dir}/{script_name}")
+    config_files = sorted(script_dir.glob("*_config.json"))
+    script_upload_path = script_path
+    tmp_script_path: Path | None = None
+    try:
+        original = script_path.read_text(encoding="utf-8")
+        patched = original
+        for cfg in config_files:
+            patched = patched.replace(str(cfg.resolve()), cfg.name)
+            patched = patched.replace(str(cfg), cfg.name)
+        if patched != original:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".sh",
+                delete=False,
+                encoding="utf-8",
+            ) as tf:
+                tf.write(patched)
+                tmp_script_path = Path(tf.name)
+            script_upload_path = tmp_script_path
+    except OSError:
+        pass
 
-    # Also upload arena_config.json if it exists
-    config_path = script_dir / "arena_config.json"
-    if config_path.exists():
-        _upload_file(conn, config_path, f"{remote_dir}/arena_config.json")
+    _upload_file(conn, script_upload_path, f"{remote_dir}/{script_name}")
+
+    # Upload any generated task configs in the script directory.
+    # (arena, agreement, generate)
+    for config_path in config_files:
+        _upload_file(conn, config_path, f"{remote_dir}/{config_path.name}")
+    if tmp_script_path is not None:
+        try:
+            tmp_script_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # Build sbatch command
     sbatch_cmd = f"cd {remote_dir} && sbatch --parsable"

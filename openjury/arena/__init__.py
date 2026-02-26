@@ -15,6 +15,7 @@ Or run directly::
 """
 
 from openjury.arena.config import (
+    AgreementConfig,
     ArenaConfig,
     ArenaResult,
     JudgeConfig,
@@ -26,6 +27,7 @@ from openjury.arena.config import (
 )
 
 __all__ = [
+    "AgreementConfig",
     "ArenaConfig",
     "ArenaResult",
     "JudgeConfig",

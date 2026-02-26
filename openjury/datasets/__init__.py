@@ -35,6 +35,7 @@ Then import it in ``openjury/datasets/loaders/__init__.py``.
 
 from openjury.datasets.schema import EvalDataset, EvalSample
 from openjury.datasets.registry import DatasetRegistry
+from openjury.datasets.options import DatasetOptions
 
 # Importing loaders triggers all @register decorators
 import openjury.datasets.loaders  # noqa: F401
@@ -58,5 +59,6 @@ __all__ = [
     "EvalSample",
     "EvalDataset",
     "DatasetRegistry",
+    "DatasetOptions",
     "load_dataset",
 ]
