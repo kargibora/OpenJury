@@ -88,6 +88,10 @@ def resolve_generate_cli(
 
     if args.submit and not args.slurm:
         parser.error("--submit is only valid together with --slurm.")
+    if getattr(args, "detach", False) and not args.slurm:
+        parser.error("--detach is only valid together with --slurm.")
+    if getattr(args, "detach", False) and not args.submit:
+        parser.error("--detach requires --submit.")
 
     if args.config:
         config = GenerateConfig.load(args.config)
@@ -139,6 +143,7 @@ def resolve_generate_cli(
         slurm_forward = SlurmForwardRequest(
             mode="generate",
             submit=bool(getattr(args, "submit", False)),
+            detach=bool(getattr(args, "detach", False)),
             slurm_output_dir=getattr(args, "slurm_output_dir", "slurm_scripts"),
             warn_output_dir_semantics=True,
         )

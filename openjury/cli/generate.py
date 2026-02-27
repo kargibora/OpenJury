@@ -147,6 +147,11 @@ def main(argv: list[str] | None = None):
         help="With --slurm: submit generated scripts immediately.",
     )
     parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="With --slurm --submit: run submission in background and return immediately.",
+    )
+    parser.add_argument(
         "--slurm_output_dir",
         default="slurm_scripts",
         help="With --slurm: root directory for generated SLURM scripts (default: slurm_scripts).",

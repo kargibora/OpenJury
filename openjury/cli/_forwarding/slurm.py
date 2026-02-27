@@ -13,6 +13,7 @@ class SlurmForwardRequest:
 
     mode: Literal["arena", "agreement", "generate"]
     submit: bool = False
+    detach: bool = False
     slurm_output_dir: str = "slurm_scripts"
     remote: bool = False
     cluster: str | None = None
@@ -62,6 +63,8 @@ def forward_task_config_to_slurm(
         ]
         if slurm_request.submit:
             slurm_argv.append("--submit")
+        if slurm_request.detach:
+            slurm_argv.append("--detach")
         if slurm_request.remote:
             slurm_argv.append("--remote")
         if slurm_request.cluster:

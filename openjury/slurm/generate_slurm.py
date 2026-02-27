@@ -599,6 +599,14 @@ def main(argv: list[str] | None = None):
              "(dry-run).",
     )
     parser.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "With --submit: run submit_all.sh in background and return immediately. "
+            "Useful for long-running local/login-node orchestration scripts."
+        ),
+    )
+    parser.add_argument(
         "--remote", action="store_true",
         help="Submit to a remote cluster via slurmpilot (SSH). "
              "Requires 'uv sync --extra remote' and a configured cluster. "
@@ -624,6 +632,11 @@ def main(argv: list[str] | None = None):
     )
 
     args = parser.parse_args(argv)
+
+    if args.detach and not args.submit:
+        parser.error("--detach requires --submit.")
+    if args.detach and args.remote:
+        parser.error("--detach is not supported with --remote.")
 
     explicit_dests = slurm_config_resolver.collect_explicit_dests(parser, argv)
     resolved_task_payload = slurm_config_resolver.resolve_args_from_config(
@@ -748,15 +761,7 @@ def main(argv: list[str] | None = None):
     elif args.submit:
         import subprocess
 
-        # Detect whether submit_all.sh will block (login-node jobs)
-        # by checking if all models are API-based (no sbatch).
-        all_api = not config.judge_local and all(
-            not is_local_provider(provider_from_model(m))
-            for m in config.models
-        )
-
-        if all_api:
-            # API / login-node jobs would block — run in background
+        if args.detach:
             log_file = run_dir / "submit_all.log"
             logger.info("Submitting jobs in background: bash %s", submit_script)
             with open(log_file, "w", encoding="utf-8") as log_fh:
@@ -765,13 +770,12 @@ def main(argv: list[str] | None = None):
                     cwd=str(run_dir),
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,  # detach from terminal
+                    start_new_session=True,
                 )
             logger.info("✅ Background PID: %d", proc.pid)
             logger.info("Monitor:  tail -f %s", log_file)
             logger.info("Check:    ps -p %d", proc.pid)
         else:
-            # SLURM jobs — sbatch returns immediately, no need to background
             logger.info("Submitting jobs via: bash %s", submit_script)
             result = subprocess.run(
                 ["bash", str(submit_script)],

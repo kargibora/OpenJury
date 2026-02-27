@@ -68,6 +68,11 @@ Examples:
         help="With --slurm: submit generated scripts immediately.",
     )
     parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="With --slurm --submit: run submission in background and return immediately.",
+    )
+    parser.add_argument(
         "--slurm_output_dir",
         default="slurm_scripts",
         help="With --slurm: root directory for generated SLURM scripts (default: slurm_scripts).",
@@ -77,6 +82,10 @@ Examples:
 
     if args.submit and not args.slurm:
         parser.error("--submit is only valid together with --slurm.")
+    if args.detach and not args.slurm:
+        parser.error("--detach is only valid together with --slurm.")
+    if args.detach and not args.submit:
+        parser.error("--detach requires --submit.")
     resolved = resolve_arena_cli(parser, args, argv)
     if resolved.slurm_forward is not None:
         if resolved.slurm_forward.warn_output_dir_semantics:

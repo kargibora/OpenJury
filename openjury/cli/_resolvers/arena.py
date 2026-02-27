@@ -149,6 +149,7 @@ def resolve_arena_cli(
         slurm_forward = SlurmForwardRequest(
             mode="arena",
             submit=bool(getattr(args, "submit", False)),
+            detach=bool(getattr(args, "detach", False)),
             slurm_output_dir=getattr(args, "slurm_output_dir", "slurm_scripts"),
             remote=bool(getattr(args, "remote", False)),
             cluster=getattr(args, "cluster", None),
