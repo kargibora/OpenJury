@@ -9,8 +9,6 @@ Log levels:
     - ``logger.warning()`` — Something unexpected but recoverable
     - ``logger.error()``   — Something failed
 
-The results panel uses Rich's Panel and Table for beautiful battle results.
-
 Environment variable ``OPENJURY_LOG_LEVEL`` controls verbosity:
     - DEBUG, INFO (default), WARNING, ERROR
 """
@@ -22,9 +20,6 @@ import os
 
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.panel import Panel
-from rich.table import Table
-from rich.text import Text
 from rich.theme import Theme
 
 # ── Custom theme ─────────────────────────────────────────────────
@@ -67,40 +62,3 @@ def _setup_logger() -> logging.Logger:
 
 
 logger = _setup_logger()
-
-
-def print_results(results: dict) -> None:
-    """Print battle results as a Rich panel with colored output.
-
-    Args:
-        results: Dict with keys: dataset, model_A, model_B, judge_model,
-                 num_battles, winrate, num_wins, num_losses, num_ties.
-    """
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("key", style="bold")
-    table.add_column("value")
-
-    table.add_row("📊 Dataset", f"[dataset]{results['dataset']}[/dataset]")
-    table.add_row(
-        "🤖 Model A",
-        f"[model]{results['model_A']}[/model]",
-    )
-    table.add_row(
-        "🤖 Model B",
-        f"[model]{results['model_B']}[/model]",
-    )
-    table.add_row("⚖️  Judge", f"[model]{results['judge_model']}[/model]")
-    table.add_row("", "")  # spacer
-    table.add_row("Total Battles", f"[number]{results['num_battles']}[/number]")
-    table.add_row("Win Rate (A)", f"[number]{results['winrate']:.1%}[/number]")
-    table.add_row("✅ Wins", f"[success]{results['num_wins']}[/success]")
-    table.add_row("❌ Losses", f"[error]{results['num_losses']}[/error]")
-    table.add_row("🤝 Ties", f"[number]{results['num_ties']}[/number]")
-
-    panel = Panel(
-        table,
-        title="[bold]🏆 MODEL BATTLE RESULTS 🏆[/bold]",
-        border_style="cyan",
-        padding=(1, 2),
-    )
-    console.print(panel)

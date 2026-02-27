@@ -49,6 +49,7 @@ def _apply_agreement_cli_overrides(
             ("n_instructions", lambda c, v: setattr(c, "n_instructions", v)),
             ("language", lambda c, v: setattr(c, "language", v)),
             ("seed", lambda c, v: setattr(c, "seed", v)),
+            ("balance_by", lambda c, v: setattr(c, "balance_by", v)),
             ("rubric", lambda c, v: setattr(c, "rubric", v)),
             ("truncate_instruction", lambda c, v: setattr(c, "truncate_instruction", v)),
             ("judge_model", lambda c, v: setattr(c.judge, "model", v)),
@@ -115,6 +116,7 @@ def resolve_agreement_cli(
             n_instructions=args.n_instructions,
             language=args.language,
             seed=args.seed,
+            balance_by=args.balance_by,
             rubric=args.rubric,
             ignore_score_cache=args.ignore_score_cache,
             truncate_instruction=args.truncate_instruction,
@@ -122,11 +124,6 @@ def resolve_agreement_cli(
 
     slurm_forward: SlurmForwardRequest | None = None
     if args.slurm:
-        if args.stage != "all":
-            parser.error(
-                "--stage is not supported with --slurm forwarding yet. "
-                "Use openjury-slurm directly for staged scheduling."
-            )
         slurm_forward = SlurmForwardRequest(
             mode="agreement",
             submit=bool(getattr(args, "submit", False)),
@@ -135,6 +132,7 @@ def resolve_agreement_cli(
             cluster=getattr(args, "cluster", None),
             remote_project_dir=getattr(args, "remote_project_dir", None),
             wait_timeout=getattr(args, "wait_timeout", None),
+            stage=args.stage,
             warn_output_dir_semantics=(args.output_dir != "results/agreement"),
         )
 

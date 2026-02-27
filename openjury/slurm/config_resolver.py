@@ -67,6 +67,7 @@ def _apply_generate_config(
             ("n_instructions", lambda c: c.n_instructions),
             ("language", lambda c: c.language),
             ("seed", lambda c: c.seed),
+            ("balance_by", lambda c: c.balance_by),
             ("generation_max_tokens", lambda c: c.max_tokens),
             ("truncate_input_chars", lambda c: c.truncate_input_chars),
             ("models", lambda c: [c.model]),
@@ -115,6 +116,7 @@ def _apply_agreement_config(
             ("n_instructions", lambda c: c.n_instructions),
             ("language", lambda c: c.language),
             ("seed", lambda c: c.seed),
+            ("balance_by", lambda c: c.balance_by),
             ("truncate_instruction", lambda c: c.truncate_instruction),
         ],
     )
@@ -148,6 +150,9 @@ def _apply_arena_config(
             ),
             ("dataset", lambda c: c.dataset),
             ("n_instructions", lambda c: c.n_instructions),
+            ("language", lambda c: c.language),
+            ("seed", lambda c: c.seed),
+            ("balance_by", lambda c: c.balance_by),
             ("rubric", lambda c: c.rubric),
             ("judge_gpus", lambda c: c.judge.gpus),
             ("judge_quantization", lambda c: c.judge.quantization),
@@ -179,6 +184,10 @@ def _apply_arena_config(
 
 def validate_mode_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Validate mode-specific required args after config resolution."""
+    stage = getattr(args, "stage", "all")
+    if args.mode in {"generate", "judge"} and stage != "all":
+        parser.error("--stage is only supported for --mode arena or --mode agreement.")
+
     if args.mode == "arena":
         if not args.models or len(args.models) < 2:
             parser.error(

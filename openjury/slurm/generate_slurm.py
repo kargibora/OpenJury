@@ -74,7 +74,7 @@ from pathlib import Path
 from textwrap import dedent
 
 from openjury._logging import logger
-from openjury.cli_args import add_arena_pipeline_args, add_dataset_selection_args
+from openjury.cli_args import add_arena_pipeline_args
 from openjury.models.utils import (
     is_local_provider,
     needs_network,
@@ -157,7 +157,9 @@ class PipelineConfig:
     ignore_score_cache: bool = False  # force re-scoring even if judge scores are cached
     language: str | None = None  # dataset language/filter (where supported)
     seed: int = 42  # dataset sub-sampling seed (where supported)
+    balance_by: str | None = None  # metadata field for balanced sub-sampling
     truncate_instruction: int = 500  # output display truncation (task-specific)
+    stage: str = "all"  # evaluation stage for arena/agreement: all|annotate|analyze
 
     # ── Judge ───────────────────────────────────────────────────────
     judge_gpus: int = 1
@@ -203,6 +205,7 @@ class PipelineConfig:
             n_instructions=self.n_instructions,
             language=self.language,
             seed=self.seed,
+            balance_by=self.balance_by,
         )
 
     @classmethod
@@ -226,9 +229,17 @@ class PipelineConfig:
             if args.judge_model and args.judge_model != "none"
             else False
         )
+        stage = getattr(args, "stage", "all")
+        mode = getattr(args, "mode", "arena")
         models = args.models or []
         any_local_model = any(not needs_network(m) for m in models)
-        any_slurm = any_local_model or judge_local
+        run_generate_phase = mode in {"generate", "arena"} and not (
+            mode == "arena" and stage == "analyze"
+        )
+        run_judge_phase = mode in {"judge", "arena", "agreement"}
+        any_slurm_gen = any_local_model and run_generate_phase
+        any_slurm_judge = judge_local and run_judge_phase
+        any_slurm = any_slurm_gen or any_slurm_judge
 
         # ── Validate required env vars (only those needed) ───────
         required: list[str] = ["USER_WORK_DIR"]
@@ -248,9 +259,8 @@ class PipelineConfig:
 
         # Validate per-job time sources (avoid producing scripts with empty --time=)
         env_time_limit = _env_mod.get("TIME_LIMIT")
-        mode = getattr(args, "mode", "arena")
-        needs_generate_time = any_local_model and mode in {"generate", "arena"}
-        needs_judge_time = judge_local and mode in {"judge", "arena", "agreement"}
+        needs_generate_time = any_slurm_gen
+        needs_judge_time = any_slurm_judge
         time_missing_msgs: list[str] = []
         if needs_generate_time and getattr(args, "time_generate", None) is None and not env_time_limit:
             time_missing_msgs.append("generation jobs require --time_generate or $TIME_LIMIT")
@@ -320,7 +330,9 @@ class PipelineConfig:
             ignore_score_cache=getattr(args, "ignore_score_cache", False),
             language=getattr(args, "language", None),
             seed=getattr(args, "seed", 42),
+            balance_by=getattr(args, "balance_by", None),
             truncate_instruction=getattr(args, "truncate_instruction", 500),
+            stage=stage,
             judge_gpus=judge_gpus,
             judge_quantization=args.judge_quantization,
             judge_enable_thinking=getattr(args, "enable_thinking", False) or None,
@@ -514,7 +526,6 @@ def main(argv: list[str] | None = None):
         help="Quantization per model (same order as --models). "
              "Use 'none' for no quantization.",
     )
-    add_dataset_selection_args(parser)
     parser.add_argument(
         "--truncate_instruction", type=int, default=500,
         help="Truncate instruction text in saved outputs (task-specific). Default: 500.",
@@ -557,6 +568,16 @@ def main(argv: list[str] | None = None):
              "'agreement' = human-vs-judge agreement on datasets with "
              "inline completions/human prefs. "
              "API judges run on login node (no SLURM job), GPU judges use sbatch. "
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["all", "annotate", "analyze"],
+        default="all",
+        help=(
+            "Evaluation stage for --mode arena/agreement: "
+            "'all' (default), 'annotate', or 'analyze'. "
+            "Not used for --mode generate/judge."
+        ),
     )
     
     parser.add_argument(

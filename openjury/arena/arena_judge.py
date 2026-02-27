@@ -36,11 +36,15 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from openjury._logging import logger
 from openjury.arena.config import Match, MatchResult, ModelScore
+from openjury.common.pair_annotation import (
+    PairSample,
+    derive_preference_from_scores,
+    score_pairs_pairwise,
+)
 from openjury.rubrics import RubricScorer
 from openjury.rubrics.schema import Rubric, RubricScore
 
@@ -240,8 +244,8 @@ class ArenaJudge:
         Returns:
             List of :class:`MatchResult`.
         """
-        weights = {d.name: d.weight for d in self.rubric.dimensions}
         results: list[MatchResult] = []
+        weights = {d.name: d.weight for d in self.rubric.dimensions}
 
         for match in matches:
             ms_a = score_index.get(match.model_a, {}).get(match.instruction_index)
@@ -254,18 +258,11 @@ class ArenaJudge:
                 )
                 continue
 
-            # Weighted average → preference
-            avg_a = _weighted_avg(ms_a.scores, weights)
-            avg_b = _weighted_avg(ms_b.scores, weights)
-
-            if np.isnan(avg_a) or np.isnan(avg_b):
-                preference = 0.5
-            elif avg_a > avg_b:
-                preference = 0.0  # model_a wins
-            elif avg_b > avg_a:
-                preference = 1.0  # model_b wins
-            else:
-                preference = 0.5  # tie
+            preference = derive_preference_from_scores(
+                ms_a.scores,
+                ms_b.scores,
+                weights,
+            )
 
             # Completion text
             comp_a = _get_completion(completions, match.model_a, match.instruction_index)
@@ -301,8 +298,8 @@ class ArenaJudge:
     ) -> list[MatchResult]:
         """Run pairwise judge on each match directly.
 
-        Groups matches by (model_a, model_b) pair for batch efficiency,
-        then calls :meth:`RubricScorer.score_pairwise` for each group.
+        Normalizes matches into pair samples, then delegates pairwise
+        annotation to the shared pair-annotation core.
 
         Args:
             completions: ``{model_name: DataFrame}`` with ``completion`` column.
@@ -314,53 +311,48 @@ class ArenaJudge:
         Returns:
             List of :class:`MatchResult`.
         """
-        # Group matches by pair for batch efficiency
-        pair_groups: dict[tuple[str, str], list[Match]] = defaultdict(list)
-        for m in matches:
-            pair_groups[(m.model_a, m.model_b)].append(m)
+        logger.info("Arena pairwise scoring: %d matches", len(matches))
 
-        logger.info(
-            "Arena pairwise scoring: %d matches across %d model pairs",
-            len(matches), len(pair_groups),
-        )
-
-        all_results: list[MatchResult] = []
-
-        for (model_a, model_b), group in pair_groups.items():
-            idxs = [m.instruction_index for m in group]
-
-            batch_instructions = [instructions[i] for i in idxs]
-            batch_comp_a = [
-                _get_completion(completions, model_a, i) for i in idxs
-            ]
-            batch_comp_b = [
-                _get_completion(completions, model_b, i) for i in idxs
-            ]
-
-            pairwise_results = self.scorer.score_pairwise(
-                instructions=batch_instructions,
-                completions_A=batch_comp_a,
-                completions_B=batch_comp_b,
-                swap_to_debias=swap_to_debias,
-                use_tqdm=use_tqdm,
+        pairs: list[PairSample] = []
+        for i, match in enumerate(matches):
+            idx = match.instruction_index
+            pairs.append(
+                PairSample(
+                    sample_id=f"arena::{i}::{match.model_a}::{match.model_b}::{idx}",
+                    instruction_index=idx,
+                    instruction=instructions[idx] if idx < len(instructions) else "",
+                    model_a=match.model_a,
+                    model_b=match.model_b,
+                    completion_a=_get_completion(completions, match.model_a, idx),
+                    completion_b=_get_completion(completions, match.model_b, idx),
+                )
             )
 
-            for match, pr in zip(group, pairwise_results):
-                all_results.append(MatchResult(
-                    model_a=model_a,
-                    model_b=model_b,
-                    instruction_index=match.instruction_index,
-                    scores_a=pr.scores_A,
-                    scores_b=pr.scores_B,
-                    preference=pr.preference,
-                    instruction=instructions[match.instruction_index]
-                    if match.instruction_index < len(instructions)
-                    else "",
-                    completion_a=batch_comp_a[group.index(match)],
-                    completion_b=batch_comp_b[group.index(match)],
-                    raw_judge_output=pr.raw_judge_output,
-                    raw_judge_output_swapped=pr.raw_judge_output_swapped,
-                ))
+        judgements = score_pairs_pairwise(
+            scorer=self.scorer,
+            pairs=pairs,
+            swap_to_debias=swap_to_debias,
+            use_tqdm=use_tqdm,
+            cache_config=None,  # arena pairwise cache remains task-specific future work
+            ignore_cache=True,
+        )
+
+        all_results = [
+            MatchResult(
+                model_a=j.model_a,
+                model_b=j.model_b,
+                instruction_index=j.instruction_index,
+                scores_a=j.scores_a,
+                scores_b=j.scores_b,
+                preference=j.preference,
+                instruction=pair.instruction,
+                completion_a=pair.completion_a,
+                completion_b=pair.completion_b,
+                raw_judge_output=j.raw_judge_output,
+                raw_judge_output_swapped=j.raw_judge_output_swapped,
+            )
+            for pair, j in zip(pairs, judgements)
+        ]
 
         logger.info(
             "Arena pairwise: %d match results collected", len(all_results),
@@ -371,18 +363,6 @@ class ArenaJudge:
 # ═════════════════════════════════════════════════════════════════════
 #  Helpers
 # ═════════════════════════════════════════════════════════════════════
-
-
-def _weighted_avg(scores: dict[str, float], weights: dict[str, float]) -> float:
-    """Weighted average of rubric scores, skipping NaN dimensions."""
-    total_w = 0.0
-    total_s = 0.0
-    for dim, w in weights.items():
-        s = scores.get(dim, float("nan"))
-        if s == s:  # not NaN
-            total_w += w
-            total_s += w * s
-    return total_s / total_w if total_w > 0 else float("nan")
 
 
 def _get_completion(

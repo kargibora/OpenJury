@@ -101,3 +101,39 @@ def test_slurm_agreement_config_passthrough_preserves_rich_fields(tmp_path, monk
     assert data["generation"]["ignore_score_cache"] is True
     assert data["output_dir"] != "results/agreement/local"
     assert data["output_dir"].endswith("/results")
+
+
+def test_slurm_arena_stage_analyze_skips_generation_scripts(tmp_path, monkeypatch):
+    cfg = ArenaConfig(
+        dataset="alpaca-eval",
+        models=[
+            ModelEntry(name="OpenRouter/qwen/model-a"),
+            ModelEntry(name="OpenRouter/qwen/model-b"),
+        ],
+        judge=JudgeConfig(model="OpenRouter/qwen/judge"),
+        output_dir="results/arena/local",
+    )
+    cfg_path = tmp_path / "arena_input.json"
+    cfg.save(cfg_path)
+
+    monkeypatch.setenv("USER_WORK_DIR", str(tmp_path / "user_work"))
+
+    out_root = tmp_path / "slurm_out"
+    tag = "ANALYZE"
+    generate_slurm.main([
+        "--mode", "arena",
+        "--stage", "analyze",
+        "--config", str(cfg_path),
+        "--output_dir", str(out_root),
+        "--tag", tag,
+    ])
+
+    run_dir = out_root / f"{cfg.dataset}_arena_{tag}"
+    scripts = sorted(run_dir.glob("*.sh"))
+    script_names = [p.name for p in scripts]
+
+    assert "01_arena_analyze.sh" in script_names
+    assert not any("_generate_" in name for name in script_names)
+
+    analyze_script = (run_dir / "01_arena_analyze.sh").read_text(encoding="utf-8")
+    assert '--stage "analyze"' in analyze_script

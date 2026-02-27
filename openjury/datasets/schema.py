@@ -20,6 +20,7 @@ Example::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import random
 from typing import Any, Iterator
 
 
@@ -140,5 +141,116 @@ class EvalDataset:
         return EvalDataset(
             name=self.name,
             samples=filtered,
+            metadata_schema=self.metadata_schema,
+        )
+
+    def sample_balanced(
+        self,
+        *,
+        by: str,
+        n: int,
+        seed: int = 42,
+    ) -> EvalDataset:
+        """Return a class-balanced subsample by a metadata/top-level field.
+
+        Sampling is approximately uniform across classes and redistributes
+        deficits automatically. For example, with ``n=2000`` across 20 classes
+        it will target ~100/class; if one class has fewer examples, the
+        remainder is redistributed across other classes.
+
+        Args:
+            by: Field name to balance by. Supports metadata keys directly
+                (e.g. ``"lang"``) or ``"metadata.lang"``. ``"language"``
+                falls back to ``metadata["lang"]``.
+            n: Requested sample size.
+            seed: RNG seed for reproducible sampling.
+        """
+        if n <= 0:
+            return EvalDataset(
+                name=self.name,
+                samples=[],
+                metadata_schema=self.metadata_schema,
+            )
+        if n >= len(self.samples):
+            return EvalDataset(
+                name=self.name,
+                samples=list(self.samples),
+                metadata_schema=self.metadata_schema,
+            )
+
+        def _extract_field(sample: EvalSample, field_name: str) -> Any:
+            if field_name.startswith("metadata."):
+                return sample.metadata.get(field_name.split(".", 1)[1])
+
+            # Allow balancing by a top-level sample attribute when present.
+            if field_name != "metadata" and hasattr(sample, field_name):
+                return getattr(sample, field_name)
+
+            # Metadata key (common case)
+            value = sample.metadata.get(field_name)
+            if value is None and field_name == "language":
+                value = sample.metadata.get("lang")
+            elif value is None and field_name == "lang":
+                value = sample.metadata.get("language")
+            return value
+
+        def _normalize_bucket(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                stripped = value.strip()
+                return stripped or None
+            try:
+                return str(value)
+            except Exception:
+                return repr(value)
+
+        groups: dict[str, list[EvalSample]] = {}
+        n_missing = 0
+        for sample in self.samples:
+            bucket = _normalize_bucket(_extract_field(sample, by))
+            if bucket is None:
+                n_missing += 1
+                bucket = "__missing__"
+            groups.setdefault(bucket, []).append(sample)
+
+        # If every sample is missing the target field, fail loudly.
+        if len(groups) == 1 and "__missing__" in groups and n_missing == len(self.samples):
+            raise ValueError(
+                f"Cannot balance dataset '{self.name}' by '{by}': field not found in samples."
+            )
+
+        rng = random.Random(seed)
+        pools: dict[str, list[EvalSample]] = {}
+        for key, items in groups.items():
+            shuffled = list(items)
+            rng.shuffle(shuffled)
+            pools[key] = shuffled
+
+        target = min(n, len(self.samples))
+        selected: list[EvalSample] = []
+        active = list(pools.keys())
+        rng.shuffle(active)
+
+        # Round-robin over active groups yields near-equal allocations and
+        # naturally redistributes deficits from smaller groups.
+        while active and len(selected) < target:
+            next_active: list[str] = []
+            for key in active:
+                pool = pools[key]
+                if pool:
+                    selected.append(pool.pop())
+                    if len(selected) >= target:
+                        break
+                if pool:
+                    next_active.append(key)
+            active = next_active
+            if active:
+                rng.shuffle(active)
+
+        rng.shuffle(selected)
+        return EvalDataset(
+            name=self.name,
+            samples=selected,
             metadata_schema=self.metadata_schema,
         )

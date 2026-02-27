@@ -286,6 +286,7 @@ Both `arena` and `agreement` support stage control:
 - `--stage annotate`: run judge annotation and save an intermediate artifact
 - `--stage analyze`: load the saved annotation artifact and compute final metrics/results
 - `--stage all` (default): run both in one call
+- This also works with `--slurm` forwarding (`openjury-evaluate arena/agreement --slurm --stage ...`).
 
 Arena example:
 

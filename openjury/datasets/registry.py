@@ -80,9 +80,26 @@ class DatasetRegistry:
         Raises:
             KeyError: If no loader matches *name*.
         """
+        balance_by = kwargs.pop("balance_by", None)
+        sampler_seed = int(kwargs.get("seed", 42) or 42)
+
+        def _load_with_optional_balancing(loader: LoaderFn, **loader_kwargs: Any) -> EvalDataset:
+            # Balanced sampling needs the full candidate pool to rebalance
+            # deficits across classes. We therefore bypass loader-side n-cuts.
+            if balance_by and n is not None:
+                ds_full = loader(n=None, **loader_kwargs)
+                before = len(ds_full)
+                ds_bal = ds_full.sample_balanced(by=str(balance_by), n=n, seed=sampler_seed)
+                logger.info(
+                    "Balanced sample by '%s': requested n=%d -> %d/%d samples",
+                    balance_by, n, len(ds_bal), before,
+                )
+                return ds_bal
+            return loader(n=n, **loader_kwargs)
+
         # ── Exact match ──────────────────────────────────────────
         if name in cls._loaders:
-            ds = cls._loaders[name](n=n, **kwargs)
+            ds = _load_with_optional_balancing(cls._loaders[name], **kwargs)
             logger.info(
                 "Loaded dataset '%s': %d samples (%s)",
                 name, len(ds), ", ".join(sorted(ds.metadata_keys)) or "no metadata",
@@ -94,7 +111,11 @@ class DatasetRegistry:
         if len(parts) == 2:
             base, suffix = parts
             if base in cls._loaders:
-                ds = cls._loaders[base](n=n, language=suffix, **kwargs)
+                ds = _load_with_optional_balancing(
+                    cls._loaders[base],
+                    language=suffix,
+                    **kwargs,
+                )
                 # Override the dataset name to include the suffix
                 ds.name = name
                 logger.info(

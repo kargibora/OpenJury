@@ -1,4 +1,4 @@
-"""Helpers for evaluation analysis stages."""
+"""Common helpers for analysis stages."""
 
 from __future__ import annotations
 
@@ -10,7 +10,37 @@ import numpy as np
 import pandas as pd
 
 from openjury._logging import logger
-from openjury.utils import compute_cohen_kappa
+
+
+def compute_cohen_kappa(y1: list[str], y2: list[str]) -> float:
+    """Compute Cohen's kappa coefficient for inter-rater agreement."""
+    if len(y1) != len(y2):
+        raise ValueError("Both lists must have the same length")
+    if len(y1) == 0:
+        raise ValueError("Lists cannot be empty")
+
+    categories = sorted(set(y1) | set(y2))
+    n = len(y1)
+
+    matrix: dict[str, dict[str, int]] = {}
+    for cat1 in categories:
+        matrix[cat1] = {cat2: 0 for cat2 in categories}
+
+    for label1, label2 in zip(y1, y2):
+        matrix[label1][label2] += 1
+
+    observed_agreement = sum(matrix[cat][cat] for cat in categories) / n
+
+    expected_agreement = 0.0
+    for cat in categories:
+        p1 = sum(matrix[cat][c] for c in categories) / n
+        p2 = sum(matrix[c][cat] for c in categories) / n
+        expected_agreement += p1 * p2
+
+    if expected_agreement == 1:
+        return 1.0 if observed_agreement == 1 else 0.0
+
+    return (observed_agreement - expected_agreement) / (1 - expected_agreement)
 
 
 def compute_agreement_metrics(

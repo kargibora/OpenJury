@@ -18,8 +18,9 @@ from datasets import Dataset
 from langchain.prompts import ChatPromptTemplate
 
 from openjury.datasets import load_dataset
-from openjury.utils import do_inference, make_model
-from openjury.utils import set_langchain_cache
+from openjury.common.paths import set_langchain_cache
+from openjury.inference import do_inference
+from openjury.models.factory import make_model
 
 # set_langchain_cache()
 

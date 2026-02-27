@@ -18,14 +18,13 @@ from openjury.arena.config import (
     ModelEntry,
 )
 from openjury.arena.matchmaker import get_matchmaker
-from openjury.arena.ratings import compute_ratings
-from openjury.arena.save_arena import save_arena
 from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
 from openjury.pipelines.generation import generate_instructions
 from openjury.models.factory import make_model
 from openjury.rubrics import get_rubric
 from openjury.cache.scores import score_cache
+from openjury.analysis.arena import analyze_arena_annotations as analyze_arena_stage
 from openjury.pipelines.annotate import load_arena_annotations, save_arena_annotations
 
 
@@ -39,6 +38,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
     rubric = _load_rubric(config.rubric)
 
     ds_opts = config.dataset_options
+    cache_dataset = ds_opts.cache_key()
     dataset = load_dataset(ds_opts.name, n=ds_opts.n_instructions, **ds_opts.loader_kwargs())
     instructions = dataset.instructions
     instruction_ids = dataset.instruction_ids
@@ -49,7 +49,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
     instructions_series = pd.Series(instructions, name="instruction")
     completions = _resolve_completions(
         models=config.models,
-        dataset=config.dataset,
+        dataset=cache_dataset,
         n_instructions=config.n_instructions,
         instructions=instructions_series,
         generation_max_tokens=config.generation_max_tokens,
@@ -92,7 +92,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
             instructions=instructions,
             judge_model=judge_cfg.model,
             rubric_name=rubric_name_key,
-            dataset=config.dataset,
+            dataset=cache_dataset,
             n_instructions=config.n_instructions,
             ignore_score_cache=config.ignore_score_cache,
         )
@@ -136,6 +136,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
         "metadata": {
             "models": model_names,
             "dataset": config.dataset,
+            "dataset_cache_key": cache_dataset,
             "judge_model": judge_cfg.model,
             "judge_mode": judge_cfg.mode,
             "matchmaker": config.matchmaker.strategy,
@@ -226,50 +227,11 @@ def _analyze_arena_annotations(
     ann: dict[str, Any],
 ) -> ArenaResult:
     """Compute ratings and save arena outputs from annotation payload."""
-    meta = ann["metadata"]
-    model_names = list(meta["models"])
-    match_results: list[MatchResult] = ann["matches"]
-    dimension_names = ann.get("dimension_names", [])
-
-    ratings = compute_ratings(
-        models=model_names,
-        matches=match_results,
-        dimension_names=dimension_names,
-        bt_regularization=config.bt_regularization,
-        elo_k=config.elo_k,
+    return analyze_arena_stage(
+        config=config,
+        ann=ann,
+        leaderboard_printer=_print_leaderboard,
     )
-
-    arena_result = ArenaResult(
-        models=model_names,
-        dataset=meta["dataset"],
-        judge_model=meta["judge_model"],
-        judge_mode=meta["judge_mode"],
-        matchmaker_strategy=meta["matchmaker"],
-        rubric_name=meta["rubric"],
-        rubric_definition=ann.get("rubric_definition", {}),
-        n_instructions=meta["n_instructions"],
-        instruction_metadata=ann.get("instruction_metadata", []),
-        model_scores=ann.get("model_scores", {}),
-        matches=match_results,
-        bt_strengths=ratings["bt_strengths"],
-        elo_ratings=ratings["elo"],
-        win_matrix=ratings["win_matrix"],
-        aggregate_win_rates=ratings["aggregate_win_rates"],
-        dimension_weights=ratings["dimension_weights"],
-        dimension_weight_accuracy=ratings["dimension_weight_accuracy"],
-        system_prompt=ann.get("system_prompt", ""),
-    )
-
-    save_arena(
-        arena_result,
-        config.output_dir,
-        include_completions=config.include_completions,
-        include_raw_judge=config.include_raw_judge,
-    )
-    config.save(Path(config.output_dir) / "arena_config.json")
-    _print_leaderboard(arena_result)
-    logger.info("Arena evaluation complete. Output: %s", config.output_dir)
-    return arena_result
 
 
 def run_arena(config: ArenaConfig, stage: str = "all") -> ArenaResult | None:
@@ -278,11 +240,18 @@ def run_arena(config: ArenaConfig, stage: str = "all") -> ArenaResult | None:
         raise ValueError(f"Unsupported arena stage: {stage}")
 
     if stage == "analyze":
+        logger.info(
+            "Arena analyze stage: loading saved annotations only (no model inference)."
+        )
         ann_runtime = _load_arena_annotation_runtime(config.output_dir)
         return _analyze_arena_annotations(config, ann_runtime)
 
     ann_payload = _annotate_arena(config)
-    ann_path = save_arena_annotations(config.output_dir, ann_payload)
+    ann_path = save_arena_annotations(
+        config.output_dir,
+        ann_payload,
+        config_snapshot=config.to_dict(),
+    )
     config.save(Path(config.output_dir) / "arena_config.json")
     logger.info("Saved arena annotations: %s", ann_path)
 

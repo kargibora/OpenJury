@@ -35,12 +35,13 @@ def _run_generate_local(cfg: GenerateConfig) -> None:
     """Execute local generation from a resolved config."""
     output_path = Path(cfg.output)
     ds_opts = cfg.dataset_options
+    cache_dataset = ds_opts.cache_key()
 
     # ── Check completion cache first ─────────────────────────────
     if not cfg.ignore_cache:
         cached_df = cache.get(
             cfg.model,
-            ds_opts.name,
+            cache_dataset,
             ds_opts.n_instructions,
         )
         if cached_df is not None:
@@ -95,7 +96,7 @@ def _run_generate_local(cfg: GenerateConfig) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_path, index=False)
-    cache.put(df, cfg.model, ds_opts.name, ds_opts.n_instructions)
+    cache.put(df, cfg.model, cache_dataset, ds_opts.n_instructions)
     logger.info("Saved %d completions to %s (+ cached)", len(df), output_path)
 
 

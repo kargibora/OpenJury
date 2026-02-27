@@ -288,6 +288,9 @@ class ArenaConfig:
 
     # ── Dataset ──────────────────────────────────────────────────
     n_instructions: int | None = None
+    language: str | None = None
+    seed: int = 42
+    balance_by: str | None = None
 
     # ── Rubric ───────────────────────────────────────────────────
     rubric: str = "default"        # name or path to JSON rubric file
@@ -326,6 +329,9 @@ class ArenaConfig:
         return DatasetOptions(
             name=self.dataset,
             n_instructions=self.n_instructions,
+            language=self.language,
+            seed=self.seed,
+            balance_by=self.balance_by,
         )
 
     # ── Loaders ──────────────────────────────────────────────────
@@ -384,6 +390,9 @@ class ArenaConfig:
             judge=judge,
             output_dir=data.get("output_dir", "results/arena/"),
             n_instructions=data.get("n_instructions"),
+            language=data.get("language"),
+            seed=data.get("seed", 42),
+            balance_by=data.get("balance_by"),
             rubric=data.get("rubric", "default"),
             matchmaker=matchmaker,
             generation_max_tokens=generation_max_tokens,
@@ -463,6 +472,9 @@ class ArenaConfig:
         return {
             "dataset": self.dataset,
             "n_instructions": self.n_instructions,
+            "language": self.language,
+            "seed": self.seed,
+            "balance_by": self.balance_by,
             "models": models_out,
             "judge": judge_out,
             "rubric": self.rubric,
@@ -534,6 +546,7 @@ class AgreementConfig:
     n_instructions: int | None = None
     language: str | None = None
     seed: int = 42
+    balance_by: str | None = None
 
     # ── Rubric ───────────────────────────────────────────────────
     rubric: str = "default"
@@ -551,6 +564,7 @@ class AgreementConfig:
             n_instructions=self.n_instructions,
             language=self.language,
             seed=self.seed,
+            balance_by=self.balance_by,
         )
 
     # ── Loaders ──────────────────────────────────────────────────
@@ -593,6 +607,7 @@ class AgreementConfig:
             n_instructions=data.get("n_instructions"),
             language=data.get("language"),
             seed=data.get("seed", 42),
+            balance_by=data.get("balance_by"),
             rubric=data.get("rubric", "default"),
             ignore_score_cache=ignore_score_cache,
             truncate_instruction=data.get("truncate_instruction", 500),
@@ -632,6 +647,7 @@ class AgreementConfig:
             "output_dir": self.output_dir,
             "language": self.language,
             "seed": self.seed,
+            "balance_by": self.balance_by,
         }
 
     def save(self, path: str | Path) -> None:

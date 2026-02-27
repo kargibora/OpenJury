@@ -4,7 +4,8 @@ Example showing how to generate instruction quality with the prompt proposed in 
 
 import re
 
-from openjury.utils import do_inference, make_model
+from openjury.inference import do_inference
+from openjury.models.factory import make_model
 from langchain.prompts import ChatPromptTemplate
 
 max_len = 2000

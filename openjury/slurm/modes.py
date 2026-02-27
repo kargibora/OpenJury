@@ -52,6 +52,7 @@ def generate_mode_scripts(
     """Generate scripts for ``--mode generate``."""
     from openjury.cache.completions import cache as _comp_cache
 
+    cache_dataset = pipeline.dataset_options.cache_key()
     gen_paths: list[Path] = []
     gen_locals: list[bool] = []
     for idx, model in enumerate(pipeline.models):
@@ -67,7 +68,7 @@ def generate_mode_scripts(
 
         if not pipeline.ignore_cache and _comp_cache.exists(
             model=model,
-            dataset=pipeline.dataset,
+            dataset=cache_dataset,
             n=pipeline.n_instructions,
         ):
             logger.info("  ⏭ %s already cached — skipping", model)
@@ -130,11 +131,12 @@ def judge_mode_scripts(
     """Generate scripts for ``--mode judge`` (arena judge only)."""
     from openjury.cache.completions import cache as _comp_cache
 
+    cache_dataset = pipeline.dataset_options.cache_key()
     missing: list[str] = []
     for model in pipeline.models:
         if not _comp_cache.exists(
             model=model,
-            dataset=pipeline.dataset,
+            dataset=cache_dataset,
             n=pipeline.n_instructions,
         ):
             missing.append(model)
@@ -192,6 +194,7 @@ def judge_mode_scripts(
             job_judge,
             results,
             config_path=str(config_path),
+            stage="all",
             local=pipeline.judge_local,
         ),
     )
@@ -220,9 +223,58 @@ def arena_mode_scripts(
     from openjury.cache.completions import cache as _comp_cache
     from openjury.cache.scores import score_cache as _score_cache
 
+    stage = getattr(pipeline, "stage", "all")
     results = f"{pipeline.work_dir}/results"
+    cache_dataset = pipeline.dataset_options.cache_key()
     gen_paths: list[Path] = []
     gen_locals: list[bool] = []
+
+    if stage == "analyze":
+        import json as _json
+
+        config_dict = _task_config_json(
+            pipeline,
+            kind="arena",
+            results_output_dir=results,
+            fallback_builder=slurm_config_builders.build_arena_config_dict,
+        )
+        config_path = output_dir / "arena_config.json"
+        config_path.write_text(_json.dumps(config_dict, indent=2), encoding="utf-8")
+        generated_files.append(config_path)
+
+        job_analyze = job_factory(
+            job_name=f"oj_arena_analyze{tag_suffix}",
+            n_gpus=0,
+            partition=pipeline.partition,
+            account=pipeline.account,
+            time=pipeline.time_judge,
+            qos=pipeline.qos,
+        )
+        path_analyze = write_script(
+            output_dir / "01_arena_analyze.sh",
+            slurm_render._arena_step_script(
+                pipeline,
+                job_analyze,
+                results,
+                config_path=str(config_path),
+                stage=stage,
+                local=pipeline.judge_local,
+            ),
+        )
+        write_script(
+            output_dir / "submit_all.sh",
+            slurm_submit_builders.build_arena_submit_all(
+                pipeline,
+                gen_paths=[],
+                gen_locals=[],
+                path_judge=path_analyze,
+                tag_suffix=tag_suffix,
+                results_dir=results,
+                models_cached=[],
+                stage=stage,
+            ),
+        )
+        return
 
     models_cached: list[str] = []
     models_need_gen: list[tuple[int, str]] = []
@@ -232,7 +284,7 @@ def arena_mode_scripts(
             not pipeline.ignore_cache
             and _comp_cache.exists(
                 model=model,
-                dataset=pipeline.dataset,
+                dataset=cache_dataset,
                 n=pipeline.n_instructions,
             )
         ):
@@ -264,7 +316,7 @@ def arena_mode_scripts(
                 judge=pipeline.judge_model,
                 rubric=pipeline.rubric,
                 model=model,
-                dataset=pipeline.dataset,
+                dataset=cache_dataset,
                 n=pipeline.n_instructions,
             )
             for model in pipeline.models
@@ -337,6 +389,7 @@ def arena_mode_scripts(
             job_judge,
             results,
             config_path=str(config_path),
+            stage=stage,
             local=pipeline.judge_local,
         ),
     )
@@ -351,6 +404,7 @@ def arena_mode_scripts(
             tag_suffix,
             results,
             models_cached=models_cached,
+            stage=stage,
         ),
     )
 
@@ -365,6 +419,7 @@ def agreement_mode_scripts(
     generated_files: list[Path],
 ) -> None:
     """Generate scripts for ``--mode agreement``."""
+    stage = getattr(pipeline, "stage", "all")
     results = f"{pipeline.work_dir}/results"
 
     import json as _json
@@ -394,6 +449,7 @@ def agreement_mode_scripts(
             job_agreement,
             results,
             config_path=str(config_path),
+            stage=stage,
             local=pipeline.judge_local,
         ),
     )
@@ -405,5 +461,6 @@ def agreement_mode_scripts(
             path_agreement,
             results,
             tag_suffix,
+            stage=stage,
         ),
     )

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from openjury.arena.config import AgreementConfig, JudgeConfig
 from openjury.generate_config import GenerateConfig
 from openjury.resolution.argparse_overrides import collect_explicit_dests
-from openjury.slurm.config_resolver import resolve_args_from_config
+from openjury.slurm.config_resolver import resolve_args_from_config, validate_mode_args
 
 
 def test_collect_explicit_dests_detects_value_and_equals_forms():
@@ -76,6 +78,7 @@ def test_slurm_config_resolver_supports_generate_config(tmp_path):
         n_instructions=11,
         language="en",
         seed=13,
+        balance_by="lang",
         max_tokens=1234,
         truncate_input_chars=4321,
         tensor_parallel_size=2,
@@ -92,6 +95,7 @@ def test_slurm_config_resolver_supports_generate_config(tmp_path):
         n_instructions=None,
         language=None,
         seed=42,
+        balance_by=None,
         generation_max_tokens=4096,
         truncate_input_chars=8192,
         models=None,
@@ -106,6 +110,7 @@ def test_slurm_config_resolver_supports_generate_config(tmp_path):
     assert args.n_instructions == 11
     assert args.language == "en"
     assert args.seed == 13
+    assert args.balance_by == "lang"
     assert args.generation_max_tokens == 1234
     assert args.truncate_input_chars == 4321
     assert args.models == ["VLLM/Qwen/Qwen2.5-0.5B-Instruct"]
@@ -114,3 +119,31 @@ def test_slurm_config_resolver_supports_generate_config(tmp_path):
     assert args.ignore_cache is True
     assert payload.kind == "generate"
     assert payload.payload and payload.payload["output"] == str(tmp_path / "gen.parquet")
+
+
+def test_validate_mode_args_rejects_stage_for_generate_and_judge():
+    parser = argparse.ArgumentParser()
+
+    with pytest.raises(SystemExit):
+        validate_mode_args(
+            parser,
+            argparse.Namespace(
+                mode="generate",
+                stage="annotate",
+                models=["Dummy/A"],
+                judge_model=None,
+                dataset="alpaca-eval",
+            ),
+        )
+
+    with pytest.raises(SystemExit):
+        validate_mode_args(
+            parser,
+            argparse.Namespace(
+                mode="judge",
+                stage="analyze",
+                models=["Dummy/A", "Dummy/B"],
+                judge_model="Dummy/J",
+                dataset="alpaca-eval",
+            ),
+        )

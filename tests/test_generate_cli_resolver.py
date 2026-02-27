@@ -43,6 +43,7 @@ def test_generate_resolver_builds_slurm_forward_and_dataset_options(tmp_path):
         "--n_instructions", "10",
         "--language", "en",
         "--seed", "13",
+        "--balance_by", "lang",
         "--max_tokens", "1024",
         "--tensor_parallel_size", "2",
         "--quantization", "fp8",
@@ -55,7 +56,12 @@ def test_generate_resolver_builds_slurm_forward_and_dataset_options(tmp_path):
 
     assert resolved.config.dataset_options.name == "alpaca-eval"
     assert resolved.config.dataset_options.n_instructions == 10
-    assert resolved.config.dataset_options.loader_kwargs() == {"language": "en", "seed": 13}
+    assert resolved.config.dataset_options.loader_kwargs() == {
+        "language": "en",
+        "seed": 13,
+        "balance_by": "lang",
+    }
+    assert "balance=lang" in resolved.config.dataset_options.cache_key()
     assert resolved.config.max_tokens == 1024
     assert resolved.config.tensor_parallel_size == 2
     assert resolved.config.quantization == "fp8"

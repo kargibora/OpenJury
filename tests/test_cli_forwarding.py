@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from openjury.arena.config import AgreementConfig, ArenaConfig, JudgeConfig, ModelEntry
 from openjury.cli import agreement as agreement_cli
 from openjury.cli import arena as arena_cli
@@ -31,11 +29,14 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
         "--seed", "7",
         "--slurm",
         "--slurm_output_dir", "slurm_scripts",
+        "--stage", "analyze",
     ])
 
     argv = captured["argv"]
     assert argv[:2] == ["--mode", "agreement"]
     assert "--config" in argv
+    assert "--stage" in argv
+    assert argv[argv.index("--stage") + 1] == "analyze"
     assert "--dataset" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "lmsys"
@@ -43,16 +44,6 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
     assert cfg["judge"]["mode"] == "pairwise"
     assert cfg["language"] == "fr"
     assert cfg["seed"] == 7
-
-
-def test_agreement_cli_slurm_rejects_stage_forwarding():
-    with pytest.raises(SystemExit):
-        agreement_cli.main([
-            "--dataset", "lmsys",
-            "--judge_model", "OpenRouter/qwen/qwen3-32b",
-            "--slurm",
-            "--stage", "analyze",
-        ])
 
 
 def test_generate_cli_slurm_forwarding_includes_dataset_selection(monkeypatch, tmp_path):
@@ -109,12 +100,15 @@ def test_arena_cli_slurm_forwarding_uses_unified_entry(monkeypatch):
         "--include_completions",
         "--include_raw_judge",
         "--gen-kwargs", "top_k=33",
+        "--stage", "annotate",
         "--slurm",
     ])
 
     argv = captured["argv"]
     assert argv[:2] == ["--mode", "arena"]
     assert "--config" in argv
+    assert "--stage" in argv
+    assert argv[argv.index("--stage") + 1] == "annotate"
     assert "--models" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "alpaca-eval"
@@ -144,11 +138,13 @@ def test_dataset_options_properties_are_available_on_task_and_slurm_configs():
         n_instructions=50,
         language="fr",
         seed=99,
+        balance_by="lang",
     )
     gopts = agreement_cfg.dataset_options
     assert gopts.name == "lmsys"
     assert gopts.n_instructions == 50
-    assert gopts.loader_kwargs() == {"language": "fr", "seed": 99}
+    assert gopts.loader_kwargs() == {"language": "fr", "seed": 99, "balance_by": "lang"}
+    assert "balance=lang" in gopts.cache_key()
 
     slurm_cfg = PipelineConfig(
         dataset="comparia",
@@ -156,8 +152,10 @@ def test_dataset_options_properties_are_available_on_task_and_slurm_configs():
         n_instructions=10,
         language="de",
         seed=3,
+        balance_by="lang",
     )
     sopts = slurm_cfg.dataset_options
     assert sopts.name == "comparia"
     assert sopts.n_instructions == 10
-    assert sopts.loader_kwargs() == {"language": "de", "seed": 3}
+    assert sopts.loader_kwargs() == {"language": "de", "seed": 3, "balance_by": "lang"}
+    assert "balance=lang" in sopts.cache_key()

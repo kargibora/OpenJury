@@ -1,4 +1,4 @@
-"""Save and load arena results as ``arena.json``.
+"""Save arena results as ``arena.json``.
 
 The ``arena.json`` file is the **canonical** self-contained artifact for
 downstream analysis: leaderboards, BT re-fitting, cross-judge comparison,
@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from openjury._logging import logger
-from openjury.arena.config import ArenaResult, MatchResult, ModelScore
+from openjury.arena.config import ArenaResult
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -179,104 +179,3 @@ def save_arena(
     )
     return path
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Load
-# ═════════════════════════════════════════════════════════════════════
-
-
-def load_arena(path: str | Path) -> ArenaResult:
-    """Load an ``arena.json`` file into an :class:`ArenaResult`.
-
-    Args:
-        path: Path to the ``arena.json`` file, or a directory containing one.
-
-    Returns:
-        A fully populated :class:`ArenaResult`.
-
-    Raises:
-        FileNotFoundError: If the file doesn't exist.
-    """
-    path = Path(path)
-    if path.is_dir():
-        path = path / "arena.json"
-    if not path.exists():
-        raise FileNotFoundError(f"Arena file not found: {path}")
-
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    meta = data["metadata"]
-    ratings = data.get("ratings", {})
-
-    # ── Parse model scores ───────────────────────────────────────
-    model_scores: dict[str, list[ModelScore]] = {}
-    for model, entries in data.get("model_scores", {}).items():
-        model_scores[model] = [
-            ModelScore(
-                model=model,
-                instruction_index=e["instruction_index"],
-                scores=e["scores"],
-                completion=e.get("completion", ""),
-                raw_judge_output=e.get("raw_judge_output", ""),
-            )
-            for e in entries
-        ]
-
-    # ── Parse matches ────────────────────────────────────────────
-    matches: list[MatchResult] = []
-    for m in data.get("matches", []):
-        matches.append(MatchResult(
-            model_a=m["model_a"],
-            model_b=m["model_b"],
-            instruction_index=m["instruction_index"],
-            scores_a=m["scores_a"],
-            scores_b=m["scores_b"],
-            preference=m["preference"],
-            instruction=m.get("instruction", ""),
-            instruction_id=m.get("instruction_id", ""),
-            instruction_metadata=m.get("instruction_metadata", {}),
-            completion_a=m.get("completion_a", ""),
-            completion_b=m.get("completion_b", ""),
-            raw_judge_output=m.get("raw_judge_output", ""),
-            raw_judge_output_swapped=m.get("raw_judge_output_swapped"),
-        ))
-
-    # ── Reconstruct per-instruction metadata from columnar ───────
-    instruction_metadata: list[dict[str, Any]] = []
-    if "instruction_metadata" in data:
-        col_data = data["instruction_metadata"]
-        if col_data:
-            first_key = next(iter(col_data))
-            n_rows = len(col_data[first_key])
-            for i in range(n_rows):
-                instruction_metadata.append(
-                    {k: col_data[k][i] for k in col_data}
-                )
-
-    result = ArenaResult(
-        models=meta["models"],
-        dataset=meta["dataset"],
-        judge_model=meta["judge_model"],
-        judge_mode=meta["judge_mode"],
-        matchmaker_strategy=meta.get("matchmaker", "round_robin"),
-        rubric_name=meta.get("rubric", "default"),
-        rubric_definition=data.get("rubric_definition", {}),
-        n_instructions=meta.get("n_instructions", 0),
-        instruction_metadata=instruction_metadata,
-        model_scores=model_scores,
-        matches=matches,
-        bt_strengths=ratings.get("bt_strengths", {}),
-        elo_ratings=ratings.get("elo", {}),
-        win_matrix=ratings.get("win_matrix", {}),
-        aggregate_win_rates=ratings.get("aggregate_win_rates", {}),
-        dimension_weights=ratings.get("dimension_weights", {}),
-        dimension_weight_accuracy=ratings.get("dimension_weight_accuracy", 0.0),
-        system_prompt=data.get("system_prompt", ""),
-    )
-
-    logger.info(
-        "Loaded arena: %d models, %d matches, dataset=%s, judge=%s",
-        result.n_models, result.n_matches, result.dataset, result.judge_model,
-    )
-    return result

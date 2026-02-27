@@ -6,6 +6,7 @@ stages in evaluation pipelines.
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -23,12 +24,15 @@ def save_annotation_artifact(
     filename: str,
     task: str,
     payload: dict[str, Any],
+    config_snapshot: dict[str, Any] | None = None,
 ) -> Path:
     """Save an intermediate annotation artifact as JSON."""
     path = _artifact_path(output_dir, filename)
     data = {
         "task": task,
-        "version": "1",
+        "schema_version": "2.0",
+        "created_at": datetime.now().isoformat(),
+        "config_snapshot": config_snapshot or {},
         **payload,
     }
     with path.open("w", encoding="utf-8") as f:
@@ -55,15 +59,27 @@ def load_annotation_artifact(
         raise ValueError(
             f"Expected {expected_task!r} annotation artifact, found {task!r} at {path}"
         )
+    # Backward compatibility: older artifacts used {"version": "1"} and had no
+    # config_snapshot/created_at fields.
+    if "schema_version" not in data:
+        data["schema_version"] = str(data.get("version", "1"))
+    data.setdefault("config_snapshot", {})
+    data.setdefault("created_at", "")
     return data
 
 
-def save_agreement_annotations(output_dir: str | Path, payload: dict[str, Any]) -> Path:
+def save_agreement_annotations(
+    output_dir: str | Path,
+    payload: dict[str, Any],
+    *,
+    config_snapshot: dict[str, Any] | None = None,
+) -> Path:
     return save_annotation_artifact(
         output_dir=output_dir,
         filename="agreement_annotations.json",
         task="agreement",
         payload=payload,
+        config_snapshot=config_snapshot,
     )
 
 
@@ -75,12 +91,18 @@ def load_agreement_annotations(output_dir: str | Path) -> dict[str, Any]:
     )
 
 
-def save_arena_annotations(output_dir: str | Path, payload: dict[str, Any]) -> Path:
+def save_arena_annotations(
+    output_dir: str | Path,
+    payload: dict[str, Any],
+    *,
+    config_snapshot: dict[str, Any] | None = None,
+) -> Path:
     return save_annotation_artifact(
         output_dir=output_dir,
         filename="arena_annotations.json",
         task="arena",
         payload=payload,
+        config_snapshot=config_snapshot,
     )
 
 

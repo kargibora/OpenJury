@@ -18,6 +18,7 @@ class SlurmForwardRequest:
     cluster: str | None = None
     remote_project_dir: str | None = None
     wait_timeout: int | None = None
+    stage: Literal["all", "annotate", "analyze"] | None = None
     warn_output_dir_semantics: bool = False
 
 
@@ -69,5 +70,7 @@ def forward_task_config_to_slurm(
             slurm_argv += ["--remote_project_dir", slurm_request.remote_project_dir]
         if slurm_request.wait_timeout is not None:
             slurm_argv += ["--wait_timeout", str(slurm_request.wait_timeout)]
+        if task_mode in {"arena", "agreement"} and slurm_request.stage is not None:
+            slurm_argv += ["--stage", slurm_request.stage]
 
         slurm_main(slurm_argv)

@@ -162,6 +162,8 @@ def _generate_step_script(
         parts.append(f'    --language "{pipeline.language}" \\')
     if getattr(pipeline, "seed", 42) != 42:
         parts.append(f"    --seed {pipeline.seed} \\")
+    if getattr(pipeline, "balance_by", None):
+        parts.append(f'    --balance_by "{pipeline.balance_by}" \\')
     if pipeline.ignore_cache:
         parts.append("    --ignore_cache \\")
     if quantization:
@@ -190,12 +192,13 @@ def _arena_step_script(
     job: Any,
     output_dir: str,
     config_path: str,
+    stage: str = "all",
     *,
     local: bool = True,
 ) -> str:
     """Render an arena evaluation script."""
     header = _render_header(job, pipeline) if local else _render_local_header(job.job_name, pipeline, pipeline.judge_model)
-    cmd = f'uv run openjury-evaluate arena --config "{config_path}"'
+    cmd = f'uv run openjury-evaluate arena --config "{config_path}" --stage "{stage}"'
     model_list_str = "\n".join(f'echo "  [{i+1}] {m}"' for i, m in enumerate(pipeline.models))
 
     body = dedent(f"""\
@@ -205,6 +208,7 @@ def _arena_step_script(
         echo "Judge:      {pipeline.judge_model} (TP={job.n_gpus})"
         echo "Rubric:     {pipeline.rubric}"
         echo "Mode:       {pipeline.judge_mode}"
+        echo "Stage:      {stage}"
         echo "Matchmaker: {pipeline.matchmaker}"
         echo "Config:     {config_path}"
 
@@ -222,12 +226,13 @@ def _agreement_step_script(
     job: Any,
     output_dir: str,
     config_path: str,
+    stage: str = "all",
     *,
     local: bool = True,
 ) -> str:
     """Render an agreement evaluation script."""
     header = _render_header(job, pipeline) if local else _render_local_header(job.job_name, pipeline, pipeline.judge_model)
-    cmd = f'uv run openjury-evaluate agreement --config "{config_path}"'
+    cmd = f'uv run openjury-evaluate agreement --config "{config_path}" --stage "{stage}"'
 
     body = dedent(f"""\
         # ── Agreement Evaluation (human vs judge) ────────────────
@@ -235,7 +240,9 @@ def _agreement_step_script(
         echo "Judge:             {pipeline.judge_model} (TP={job.n_gpus})"
         echo "Rubric:            {pipeline.rubric}"
         echo "Mode:              {pipeline.judge_mode}"
+        echo "Stage:             {stage}"
         echo "Language filter:   {pipeline.language or 'all'}"
+        echo "Balanced by:       {pipeline.balance_by or 'none'}"
         echo "Config:            {config_path}"
 
         {cmd}

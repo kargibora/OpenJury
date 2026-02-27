@@ -123,6 +123,15 @@ def add_dataset_selection_args(parser: argparse.ArgumentParser) -> None:
         default=42,
         help="Dataset sub-sampling seed (where supported). Default: 42.",
     )
+    parser.add_argument(
+        "--balance_by",
+        default=None,
+        help=(
+            "Balanced sub-sampling metadata field (e.g. 'lang'). When set with "
+            "--n_instructions, the loader samples approximately uniformly across "
+            "field values and redistributes deficits automatically."
+        ),
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -345,6 +354,7 @@ def add_arena_pipeline_args(
     add_arena_config_arg(parser)
     add_models_arg(parser)
     add_dataset_args(parser)
+    add_dataset_selection_args(parser)
     add_judge_args(parser)
     add_generation_args(parser)
     add_matchmaker_args(parser)

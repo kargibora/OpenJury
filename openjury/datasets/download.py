@@ -180,11 +180,6 @@ def download(names: list[str] | None = None) -> None:
     logger.info("═══════════════════════════════════════════════════")
 
 
-def download_all() -> None:
-    """Download all registered datasets (convenience wrapper)."""
-    download(None)
-
-
 # ═════════════════════════════════════════════════════════════════════
 #  CLI
 # ═════════════════════════════════════════════════════════════════════

@@ -34,25 +34,36 @@ def build_arena_submit_all(
     results_dir: str,
     *,
     models_cached: list[str] | None = None,
+    stage: str = "all",
 ) -> str:
     """Build ``submit_all.sh`` for arena mode."""
     has_gen = bool(gen_paths)
     cached_names = models_cached or []
+    is_analyze_only = stage == "analyze"
+    pipeline_title = "OpenJury Arena Analyze Pipeline" if is_analyze_only else "OpenJury Arena Pipeline"
+    phase_label = "Arena Analyze" if is_analyze_only else "Arena Judge"
+    phase_label_lower = "arena analyze" if is_analyze_only else "arena judge"
 
     if has_gen:
         gen_model_lines = "\n".join(
             f'echo "  [{i+1}] {m} ({"compute node" if gen_locals[i] else "login node"})"'
             for i, m in enumerate([p.stem.split("_", 2)[-1] for p in gen_paths])
         )
+    elif is_analyze_only:
+        gen_model_lines = 'echo "  (generation skipped: --stage analyze)"'
     else:
         gen_model_lines = 'echo "  (all completions loaded from cache)"'
 
     n_gen = len(gen_paths)
     n_cached = len(cached_names)
-    summary = f"{n_gen} generate job(s)"
+    if is_analyze_only:
+        summary = f"{n_gen} generate job(s) → 1 arena analyze"
+    else:
+        summary = f"{n_gen} generate job(s)"
     if n_cached:
         summary += f" ({n_cached} cached)"
-    summary += " → 1 arena judge"
+    if not is_analyze_only:
+        summary += " → 1 arena judge"
 
     preamble = dedent(f"""\
         #!/bin/bash
@@ -61,7 +72,7 @@ def build_arena_submit_all(
         mkdir -p {pipeline.logs_dir} {pipeline.work_dir}
 
         echo "═══════════════════════════════════════════════════════"
-        echo "  OpenJury Arena Pipeline"
+        echo "  {pipeline_title}"
         echo "  Dataset:    {pipeline.dataset}"
         echo "  Models:     {len(pipeline.models)} total ({n_cached} cached, {n_gen} to generate)"
         {gen_model_lines}
@@ -115,41 +126,44 @@ def build_arena_submit_all(
         lines.append('echo "All generation jobs completed."')
         lines.append('echo ""')
     else:
-        lines.append('echo "✅ All completions loaded from cache — skipping generation"')
+        if is_analyze_only:
+            lines.append('echo "✅ Generation skipped for --stage analyze"')
+        else:
+            lines.append('echo "✅ All completions loaded from cache — skipping generation"')
         lines.append('echo ""')
 
     lines.append("")
-    lines.append("# ── Arena Judge Phase ──────────────────────────────")
+    lines.append(f"# ── {phase_label} Phase ──────────────────────────────")
 
     if not has_gen:
         if pipeline.judge_local:
             lines.append(f'JOB_ARENA=$(sbatch --parsable {path_judge})')
-            lines.append(f'echo "✅ Submitted Arena Judge: $JOB_ARENA  ({path_judge.name})"')
+            lines.append(f'echo "✅ Submitted {phase_label}: $JOB_ARENA  ({path_judge.name})"')
             lines.append(f'echo "Results: {results_dir}/"')
         else:
             log_judge = f"{pipeline.logs_dir}/oj_arena{tag_suffix}.log"
-            lines.append('echo "🚀 Running arena judge on login node..."')
+            lines.append(f'echo "🚀 Running {phase_label_lower} on login node..."')
             lines.append(f'bash {path_judge} > {log_judge} 2>&1')
-            lines.append('echo "✅ Arena judge completed"')
+            lines.append(f'echo "✅ {phase_label} completed"')
             lines.append(f'echo "Results: {results_dir}/"')
             lines.append(f'echo "Log:     {log_judge}"')
     elif pipeline.judge_local and all(gen_locals):
         lines.append('DEP_STR=$(IFS=:; echo "${SLURM_GEN_JOBS[*]}")')
         lines.append(f'JOB_ARENA=$(sbatch --parsable --dependency=afterok:$DEP_STR {path_judge})')
-        lines.append(f'echo "✅ Submitted Arena Judge: $JOB_ARENA  ({path_judge.name})"')
+        lines.append(f'echo "✅ Submitted {phase_label}: $JOB_ARENA  ({path_judge.name})"')
         lines.append('echo "   └── depends on: $DEP_STR"')
         lines.append("")
         lines.append('echo "Monitor: squeue -j $JOB_ARENA"')
         lines.append(f'echo "Results: {results_dir}/"')
     elif pipeline.judge_local:
         lines.append(f'JOB_ARENA=$(sbatch --parsable {path_judge})')
-        lines.append(f'echo "✅ Submitted Arena Judge: $JOB_ARENA  ({path_judge.name})"')
+        lines.append(f'echo "✅ Submitted {phase_label}: $JOB_ARENA  ({path_judge.name})"')
         lines.append(f'echo "Results: {results_dir}/"')
     else:
         log_judge = f"{pipeline.logs_dir}/oj_arena{tag_suffix}.log"
-        lines.append('echo "🚀 Running arena judge on login node..."')
+        lines.append(f'echo "🚀 Running {phase_label_lower} on login node..."')
         lines.append(f'bash {path_judge} > {log_judge} 2>&1')
-        lines.append('echo "✅ Arena judge completed"')
+        lines.append(f'echo "✅ {phase_label} completed"')
         lines.append(f'echo "Results: {results_dir}/"')
         lines.append(f'echo "Log:     {log_judge}"')
 
@@ -267,8 +281,12 @@ def build_agreement_submit_all(
     path_agreement: Path,
     results_dir: str,
     tag_suffix: str,
+    *,
+    stage: str = "all",
 ) -> str:
     """Build ``submit_all.sh`` for agreement mode."""
+    phase_label = "Agreement Analyze" if stage == "analyze" else "Agreement Evaluation"
+    phase_mode = "analyze" if stage == "analyze" else "annotate+analyze" if stage == "all" else "annotate"
     if pipeline.judge_local:
         return dedent(f"""\
             #!/bin/bash
@@ -276,10 +294,11 @@ def build_agreement_submit_all(
             mkdir -p {pipeline.logs_dir} {pipeline.work_dir}
 
             echo "═══════════════════════════════════════════════════"
-            echo "  OpenJury — Agreement Evaluation"
+            echo "  OpenJury — {phase_label}"
             echo "  Dataset:  {pipeline.dataset}"
             echo "  Judge:    {pipeline.judge_model} (compute node, {pipeline.judge_gpus} GPU(s))"
             echo "  Mode:     {pipeline.judge_mode}"
+            echo "  Stage:    {phase_mode}"
             echo "═══════════════════════════════════════════════════"
 
             JOB=$(sbatch --parsable {path_agreement})
@@ -295,15 +314,16 @@ def build_agreement_submit_all(
         mkdir -p {pipeline.logs_dir} {pipeline.work_dir}
 
         echo "═══════════════════════════════════════════════════"
-        echo "  OpenJury — Agreement Evaluation (login node)"
+        echo "  OpenJury — {phase_label} (login node)"
         echo "  Dataset:  {pipeline.dataset}"
         echo "  Judge:    {pipeline.judge_model} (API — no SLURM needed)"
         echo "  Mode:     {pipeline.judge_mode}"
+        echo "  Stage:    {phase_mode}"
         echo "═══════════════════════════════════════════════════"
 
-        echo "🚀 Running agreement evaluation on login node..."
+        echo "🚀 Running agreement pipeline on login node..."
         bash {path_agreement} 2>&1 | tee {log_agreement}
-        echo "✅ Agreement evaluation completed"
+        echo "✅ {phase_label} completed"
         echo "Results: {results_dir}/"
         echo "Log:     {log_agreement}"
     """)

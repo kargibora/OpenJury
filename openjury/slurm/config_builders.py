@@ -31,6 +31,9 @@ def build_arena_config_dict(
     arena_cfg = ArenaConfig(
         dataset=ds_opts.name,
         n_instructions=ds_opts.n_instructions,
+        language=ds_opts.language,
+        seed=ds_opts.seed,
+        balance_by=ds_opts.balance_by,
         models=model_entries,
         judge=JudgeConfig(
             model=pipeline.judge_model,
@@ -86,6 +89,7 @@ def build_agreement_config_dict(
         n_instructions=ds_opts.n_instructions,
         language=ds_opts.language,
         seed=ds_opts.seed,
+        balance_by=ds_opts.balance_by,
         rubric=pipeline.rubric,
         ignore_score_cache=pipeline.ignore_score_cache,
         truncate_instruction=pipeline.truncate_instruction,

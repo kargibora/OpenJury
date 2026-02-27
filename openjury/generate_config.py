@@ -22,6 +22,7 @@ class GenerateConfig:
     n_instructions: int | None = None
     language: str | None = None
     seed: int = 42
+    balance_by: str | None = None
     max_tokens: int = 4096
     truncate_input_chars: int = 8192
     tensor_parallel_size: int = 1
@@ -45,6 +46,7 @@ class GenerateConfig:
             n_instructions=self.n_instructions,
             language=self.language,
             seed=self.seed,
+            balance_by=self.balance_by,
         )
 
     @classmethod
@@ -74,6 +76,7 @@ class GenerateConfig:
             n_instructions=data.get("n_instructions"),
             language=data.get("language"),
             seed=data.get("seed", 42),
+            balance_by=data.get("balance_by"),
             max_tokens=data.get("max_tokens", 4096),
             truncate_input_chars=data.get("truncate_input_chars", 8192),
             tensor_parallel_size=data.get("tensor_parallel_size", 1),
@@ -97,6 +100,7 @@ class GenerateConfig:
             "n_instructions": self.n_instructions,
             "language": self.language,
             "seed": self.seed,
+            "balance_by": self.balance_by,
             "max_tokens": self.max_tokens,
             "truncate_input_chars": self.truncate_input_chars,
             "tensor_parallel_size": self.tensor_parallel_size,

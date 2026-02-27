@@ -37,8 +37,3 @@ def load_prompt(name: str) -> str:
             f"Available: {available}"
         )
     return path.read_text(encoding="utf-8")
-
-
-def list_prompts() -> list[str]:
-    """Return the stem names of all available prompt templates."""
-    return sorted(p.stem for p in _PROMPTS_DIR.glob("*.txt"))
