@@ -147,6 +147,7 @@ class JudgeConfig:
     quantization: str | None = None
     chat_template: str | None = None
     chat_template_file: str | None = None
+    pairwise_prompt_style: str = "rubric"
     provide_explanation: bool = False
     no_swap: bool = False           # disable swap debiasing in pairwise mode
     enable_thinking: bool | None = None  # for Qwen3 thinking mode
@@ -166,6 +167,7 @@ class JudgeConfig:
                 "model", "gpus", "tp", "mode", "max_tokens",
                 "temperature", "top_p", "quantization",
                 "chat_template", "chat_template_file",
+                "pairwise_prompt_style",
                 "provide_explanation", "no_swap", "enable_thinking",
                 "generation_kwargs",
             }
@@ -462,6 +464,8 @@ class ArenaConfig:
             judge_out["chat_template"] = self.judge.chat_template
         if self.judge.chat_template_file is not None:
             judge_out["chat_template_file"] = self.judge.chat_template_file
+        if self.judge.pairwise_prompt_style != "rubric":
+            judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
         if self.judge.provide_explanation:
             judge_out["provide_explanation"] = self.judge.provide_explanation
         if self.judge.no_swap:
@@ -629,6 +633,8 @@ class AgreementConfig:
             judge_out["chat_template"] = self.judge.chat_template
         if self.judge.chat_template_file is not None:
             judge_out["chat_template_file"] = self.judge.chat_template_file
+        if self.judge.pairwise_prompt_style != "rubric":
+            judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
         if self.judge.generation_kwargs:
             judge_out["generation_kwargs"] = self.judge.generation_kwargs
         if self.judge.provide_explanation:

@@ -101,6 +101,7 @@ def _apply_agreement_config(
             ("judge_gpus", lambda c: c.judge.gpus),
             ("judge_quantization", lambda c: c.judge.quantization),
             ("judge_mode", lambda c: c.judge.mode),
+            ("pairwise_prompt_style", lambda c: c.judge.pairwise_prompt_style),
             ("judge_max_tokens", lambda c: c.judge.max_tokens),
             (
                 "enable_thinking",
@@ -157,6 +158,7 @@ def _apply_arena_config(
             ("judge_gpus", lambda c: c.judge.gpus),
             ("judge_quantization", lambda c: c.judge.quantization),
             ("judge_mode", lambda c: c.judge.mode),
+            ("pairwise_prompt_style", lambda c: c.judge.pairwise_prompt_style),
             (
                 "enable_thinking",
                 lambda c: (

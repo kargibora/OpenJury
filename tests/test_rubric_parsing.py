@@ -96,6 +96,34 @@ preference: B
     assert parsed["scores_B"]["overall"] == 6.0
 
 
+def test_parse_pairwise_legacy_scores_for_overall_rubric():
+    scorer = RubricScorer(
+        judge_model=make_model("Dummy/test-judge"),
+        rubric=get_rubric("overall"),
+        pairwise_prompt_style="legacy",
+    )
+
+    parsed = scorer._parse_pairwise(
+        """
+score_A: 8
+score_B: 5
+"""
+    )
+
+    assert parsed["preference"] == 0.0
+    assert parsed["scores_A"] == {"overall": 8.0}
+    assert parsed["scores_B"] == {"overall": 5.0}
+
+
+def test_legacy_pairwise_requires_single_dimension_rubric():
+    with pytest.raises(ValueError, match="single-dimension rubric"):
+        RubricScorer(
+            judge_model=make_model("Dummy/test-judge"),
+            rubric=get_rubric("default"),
+            pairwise_prompt_style="legacy",
+        )
+
+
 def test_parse_scores_returns_nan_when_unparseable():
     scorer = _scorer_for_overall()
     scores = scorer._parse_scores("not valid output")

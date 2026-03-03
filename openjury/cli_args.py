@@ -153,6 +153,17 @@ def add_judge_args(parser: argparse.ArgumentParser) -> None:
              "model independently. 'pairwise': judge sees A and B together.",
     )
     parser.add_argument(
+        "--pairwise_prompt_style",
+        choices=["rubric", "legacy"],
+        default="rubric",
+        help=(
+            "Prompt format for pairwise judging. 'rubric' (default) asks for "
+            "dimension-level JSON scores. 'legacy' reuses the old overall "
+            "A/B scoring prompt and is intended for single-dimension rubrics "
+            "such as 'overall'."
+        ),
+    )
+    parser.add_argument(
         "--judge_max_tokens",
         type=int,
         default=2048,

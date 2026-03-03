@@ -110,6 +110,7 @@ def test_arena_config_roundtrip_preserves_model_and_judge_overrides(tmp_path):
             "gpus": 2,
             "tp": 2,
             "mode": "pairwise",
+            "pairwise_prompt_style": "legacy",
             "max_tokens": 2048,
             "temperature": 0.0,
             "top_p": 1.0,
@@ -146,8 +147,8 @@ def test_arena_config_roundtrip_preserves_model_and_judge_overrides(tmp_path):
     assert judge["tp"] == 2
     assert judge["quantization"] == "fp8"
     assert judge["chat_template"] == "{{ messages }}"
+    assert judge["pairwise_prompt_style"] == "legacy"
     assert judge["provide_explanation"] is True
     assert judge["no_swap"] is True
     assert judge["enable_thinking"] is False
     assert judge["generation_kwargs"] == {"top_k": 8}
-

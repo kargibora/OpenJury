@@ -81,6 +81,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
         judge_model=judge_model,
         rubric=rubric,
         provide_explanation=judge_cfg.provide_explanation,
+        pairwise_prompt_style=judge_cfg.pairwise_prompt_style,
     )
 
     model_scores: dict[str, list[ModelScore]] = {}
@@ -139,6 +140,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
             "dataset_cache_key": cache_dataset,
             "judge_model": judge_cfg.model,
             "judge_mode": judge_cfg.mode,
+            "pairwise_prompt_style": judge_cfg.pairwise_prompt_style,
             "matchmaker": config.matchmaker.strategy,
             "rubric": rubric_name_key,
             "n_instructions": n,

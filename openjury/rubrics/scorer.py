@@ -57,6 +57,11 @@ SAMPLEWISE_SYSTEM_PROMPT = load_prompt("rubric_samplewise_system")
 SAMPLEWISE_USER_TEMPLATE = load_prompt("rubric_samplewise_user")
 PAIRWISE_SYSTEM_PROMPT = load_prompt("rubric_pairwise_system")
 PAIRWISE_USER_TEMPLATE = load_prompt("rubric_pairwise_user")
+LEGACY_PAIRWISE_SYSTEM_PROMPT = load_prompt("legacy_pairwise_system_prompt")
+LEGACY_PAIRWISE_USER_TEMPLATE = load_prompt("prompt")
+LEGACY_PAIRWISE_USER_TEMPLATE_WITH_EXPLANATION = load_prompt(
+    "legacy_pairwise_prompt_with_explanation"
+)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -80,10 +85,22 @@ class RubricScorer:
         judge_model: Any,
         rubric: Rubric,
         provide_explanation: bool = False,
+        pairwise_prompt_style: str = "rubric",
     ):
         self.judge_model = judge_model
         self.rubric = rubric
         self.provide_explanation = provide_explanation
+        self.pairwise_prompt_style = pairwise_prompt_style
+
+        if self.pairwise_prompt_style not in {"rubric", "legacy"}:
+            raise ValueError(
+                "pairwise_prompt_style must be one of {'rubric', 'legacy'}"
+            )
+        if self.pairwise_prompt_style == "legacy" and self.rubric.k != 1:
+            raise ValueError(
+                "legacy pairwise prompt style requires a single-dimension rubric "
+                "(for example rubric='overall')."
+            )
 
         explanation_block = (
             "Before providing scores, briefly explain your reasoning for each dimension."
@@ -131,11 +148,14 @@ class RubricScorer:
             explanation_block=explanation_block,
             example_json=_example_json,
         )
-        self._pairwise_system = PAIRWISE_SYSTEM_PROMPT.format(
-            rubric_block=rubric.prompt_block(),
-            explanation_block=explanation_block,
-            example_json_pairwise=_example_pairwise,
-        )
+        if self.pairwise_prompt_style == "legacy":
+            self._pairwise_system = LEGACY_PAIRWISE_SYSTEM_PROMPT
+        else:
+            self._pairwise_system = PAIRWISE_SYSTEM_PROMPT.format(
+                rubric_block=rubric.prompt_block(),
+                explanation_block=explanation_block,
+                example_json_pairwise=_example_pairwise,
+            )
 
     @property
     def system_prompt(self) -> dict[str, str]:
@@ -284,11 +304,23 @@ class RubricScorer:
         """Build chat prompts for pairwise comparison."""
         prompts = []
         for instr, comp_a, comp_b in zip(instructions, completions_A, completions_B):
-            user_msg = PAIRWISE_USER_TEMPLATE.format(
-                instruction=instr,
-                completion_A=comp_a,
-                completion_B=comp_b,
-            )
+            if self.pairwise_prompt_style == "legacy":
+                template = (
+                    LEGACY_PAIRWISE_USER_TEMPLATE_WITH_EXPLANATION
+                    if self.provide_explanation
+                    else LEGACY_PAIRWISE_USER_TEMPLATE
+                )
+                user_msg = template.format(
+                    user_prompt=instr,
+                    completion_A=comp_a,
+                    completion_B=comp_b,
+                )
+            else:
+                user_msg = PAIRWISE_USER_TEMPLATE.format(
+                    instruction=instr,
+                    completion_A=comp_a,
+                    completion_B=comp_b,
+                )
             prompts.append([
                 ("system", self._pairwise_system),
                 ("user", user_msg),
@@ -301,6 +333,9 @@ class RubricScorer:
         Returns:
             Dict with keys: scores_A, scores_B (dicts), preference (float).
         """
+        if self.pairwise_prompt_style == "legacy":
+            return self._parse_pairwise_legacy(raw_output)
+
         nan_scores = {dim: float("nan") for dim in self.rubric.dimension_names}
         default = {"scores_A": nan_scores.copy(), "scores_B": nan_scores.copy(), "preference": 0.5}
 
@@ -353,6 +388,81 @@ class RubricScorer:
 
         logger.warning("Could not parse pairwise rubric output: %s", raw_output[:200])
         return default
+
+    def _parse_pairwise_legacy(self, raw_output: str) -> dict:
+        """Parse the legacy overall pairwise format (score_A / score_B)."""
+        dim_name = self.rubric.dimension_names[0]
+        default = {
+            "scores_A": {dim_name: float("nan")},
+            "scores_B": {dim_name: float("nan")},
+            "preference": 0.5,
+        }
+
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                return self._extract_pairwise_legacy_from_dict(data)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+        json_match = re.search(r"\{.*?\}", raw_output, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+                return self._extract_pairwise_legacy_from_dict(data)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+        match_a = re.search(
+            r"score[\s_]*A[\s:=]+(-?\d+(?:\.\d+)?)",
+            raw_output,
+            re.IGNORECASE,
+        )
+        match_b = re.search(
+            r"score[\s_]*B[\s:=]+(-?\d+(?:\.\d+)?)",
+            raw_output,
+            re.IGNORECASE,
+        )
+        if match_a and match_b:
+            score_a = float(match_a.group(1))
+            score_b = float(match_b.group(1))
+            if score_a > score_b:
+                pref = 0.0
+            elif score_b > score_a:
+                pref = 1.0
+            else:
+                pref = 0.5
+            return {
+                "scores_A": {dim_name: score_a},
+                "scores_B": {dim_name: score_b},
+                "preference": pref,
+            }
+
+        logger.warning("Could not parse legacy pairwise output: %s", raw_output[:200])
+        return default
+
+    def _extract_pairwise_legacy_from_dict(self, data: dict[str, Any]) -> dict:
+        """Extract legacy pairwise scores from a parsed JSON dict."""
+        dim_name = self.rubric.dimension_names[0]
+        score_a_raw = data.get("score_A", data.get("score_a"))
+        score_b_raw = data.get("score_B", data.get("score_b"))
+        if score_a_raw is None or score_b_raw is None:
+            raise ValueError("Legacy pairwise JSON must include score_A and score_B.")
+
+        score_a = float(score_a_raw)
+        score_b = float(score_b_raw)
+        if score_a > score_b:
+            pref = 0.0
+        elif score_b > score_a:
+            pref = 1.0
+        else:
+            pref = 0.5
+        return {
+            "scores_A": {dim_name: score_a},
+            "scores_B": {dim_name: score_b},
+            "preference": pref,
+        }
 
     def _extract_pairwise_from_dict(self, data: dict) -> dict:
         """Extract pairwise scores from a parsed JSON dict."""

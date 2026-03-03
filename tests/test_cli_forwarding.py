@@ -25,6 +25,7 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
         "--judge_model", "OpenRouter/qwen/qwen3-32b",
         "--n_instructions", "25",
         "--judge_mode", "pairwise",
+        "--pairwise_prompt_style", "legacy",
         "--language", "fr",
         "--seed", "7",
         "--slurm",
@@ -42,6 +43,7 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
     assert cfg["dataset"] == "lmsys"
     assert cfg["judge"]["model"] == "OpenRouter/qwen/qwen3-32b"
     assert cfg["judge"]["mode"] == "pairwise"
+    assert cfg["judge"]["pairwise_prompt_style"] == "legacy"
     assert cfg["language"] == "fr"
     assert cfg["seed"] == 7
 
@@ -95,6 +97,7 @@ def test_arena_cli_slurm_forwarding_uses_unified_entry(monkeypatch):
         "--judge_model", "OpenRouter/qwen/qwen3-32b",
         "--dataset", "alpaca-eval",
         "--judge_mode", "pairwise",
+        "--pairwise_prompt_style", "legacy",
         "--bt_regularization", "0.2",
         "--elo_k", "64",
         "--include_completions",
@@ -114,6 +117,7 @@ def test_arena_cli_slurm_forwarding_uses_unified_entry(monkeypatch):
     assert cfg["dataset"] == "alpaca-eval"
     assert cfg["judge"]["model"] == "OpenRouter/qwen/qwen3-32b"
     assert cfg["judge"]["mode"] == "pairwise"
+    assert cfg["judge"]["pairwise_prompt_style"] == "legacy"
     assert cfg["ratings"]["bt_regularization"] == 0.2
     assert cfg["ratings"]["elo_k"] == 64.0
     assert cfg["include_completions"] is True

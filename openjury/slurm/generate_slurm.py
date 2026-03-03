@@ -152,6 +152,7 @@ class PipelineConfig:
     truncate_input_chars: int = 8192
     provide_explanation: bool = False
     judge_mode: str = "samplewise"
+    pairwise_prompt_style: str = "rubric"
     no_swap: bool = False  # disable position-swap debiasing
     ignore_cache: bool = False  # force regeneration even if completions are cached
     ignore_score_cache: bool = False  # force re-scoring even if judge scores are cached
@@ -325,6 +326,7 @@ class PipelineConfig:
             truncate_input_chars=args.truncate_input_chars,
             provide_explanation=args.provide_explanation,
             judge_mode=getattr(args, "judge_mode", "samplewise"),
+            pairwise_prompt_style=getattr(args, "pairwise_prompt_style", "rubric"),
             no_swap=getattr(args, "no_swap", False),
             ignore_cache=getattr(args, "ignore_cache", False),
             ignore_score_cache=getattr(args, "ignore_score_cache", False),

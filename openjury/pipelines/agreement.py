@@ -107,6 +107,7 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
         judge_model=model,
         rubric=rubric,
         provide_explanation=judge_cfg.provide_explanation,
+        pairwise_prompt_style=judge_cfg.pairwise_prompt_style,
     )
     dimension_weights = {d.name: d.weight for d in rubric.dimensions}
 
@@ -142,7 +143,10 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
     cache_dataset_base = _agreement_cache_dataset_key(config, exact=False)
 
     if judge_mode == "pairwise":
-        pair_key = f"__agreement_pairwise__swap_{'off' if judge_cfg.no_swap else 'on'}"
+        pair_key = (
+            f"__agreement_pairwise__style_{judge_cfg.pairwise_prompt_style}"
+            f"__swap_{'off' if judge_cfg.no_swap else 'on'}"
+        )
         judgements = score_pairs_pairwise(
             scorer=scorer,
             pairs=pairs,
@@ -245,6 +249,7 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
             "dataset": dataset_name,
             "judge_model": judge_cfg.model,
             "judge_mode": judge_mode,
+            "pairwise_prompt_style": judge_cfg.pairwise_prompt_style,
             "rubric": rubric_name,
             "rubric_k": rubric.k,
             "swap_debiasing": not judge_cfg.no_swap,

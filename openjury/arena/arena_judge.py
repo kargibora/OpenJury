@@ -67,12 +67,14 @@ class ArenaJudge:
         judge_model: Any,
         rubric: Rubric,
         provide_explanation: bool = False,
+        pairwise_prompt_style: str = "rubric",
     ):
         self.rubric = rubric
         self.scorer = RubricScorer(
             judge_model=judge_model,
             rubric=rubric,
             provide_explanation=provide_explanation,
+            pairwise_prompt_style=pairwise_prompt_style,
         )
 
     # ─────────────────────────────────────────────────────────────
