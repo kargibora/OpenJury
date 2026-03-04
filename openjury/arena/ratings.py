@@ -10,7 +10,7 @@ Three complementary rating systems:
    quickly and are easy to interpret.
 
 3. **Dimension weights** — re-uses the existing
-   :class:`FeatureBradleyTerry` to learn *which rubric dimensions matter*
+   :class:`FeatureBradleyTerry` to learn *which criteria dimensions matter*
    by stacking all pairwise score differences across the arena.
 
 Usage::
@@ -60,7 +60,7 @@ def compute_ratings(
     Args:
         models: List of participating model names.
         matches: All :class:`MatchResult` from the arena.
-        dimension_names: Rubric dimension names (for weight fitting).
+        dimension_names: Criteria dimension names (for weight fitting).
         bt_regularization: L2 regularization for BT fitting.
         elo_k: Elo K-factor (sensitivity to each game).
         elo_initial: Starting Elo rating.
@@ -325,7 +325,7 @@ def compute_elo(
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  Dimension weights (which rubric dimensions predict the winner?)
+#  Dimension weights (which criteria dimensions predict the winner?)
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -335,10 +335,10 @@ def fit_dimension_weights(
     regularization: float = 0.01,
     include_log_length: bool = True,
 ) -> tuple[dict[str, float], float]:
-    """Fit rubric-dimension weights across all arena matches.
+    """Fit criteria-dimension weights across all arena matches.
 
     Stacks the score differences from every match into one dataset and
-    fits the existing :class:`FeatureBradleyTerry` to learn which rubric
+    fits the existing :class:`FeatureBradleyTerry` to learn which criteria
     dimensions predict the winner.
 
     When ``include_log_length`` is True, ``log(len(completion) + 1)``
@@ -348,7 +348,7 @@ def fit_dimension_weights(
 
     Args:
         matches: All match results with ``scores_a`` / ``scores_b``.
-        dimension_names: Ordered list of rubric dimension names.
+        dimension_names: Ordered list of criteria dimension names.
         regularization: L2 regularization.
         include_log_length: Add ``log_length`` feature.
 

@@ -154,12 +154,12 @@ def add_judge_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--pairwise_prompt_style",
-        choices=["rubric", "legacy"],
-        default="rubric",
+        choices=["criteria", "legacy"],
+        default="criteria",
         help=(
-            "Prompt format for pairwise judging. 'rubric' (default) asks for "
+            "Prompt format for pairwise judging. 'criteria' (default) asks for "
             "dimension-level JSON scores. 'legacy' reuses the old overall "
-            "A/B scoring prompt and is intended for single-dimension rubrics "
+            "A/B scoring prompt and is intended for single-criterion criteria "
             "such as 'overall'."
         ),
     )
@@ -228,9 +228,9 @@ def add_judge_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--rubric",
+        "--criteria",
         default="default",
-        help="Rubric name for judge evaluation (default: 'default').",
+        help="Criteria set name for judge evaluation (default: 'default').",
     )
 
 
@@ -354,7 +354,7 @@ def add_arena_pipeline_args(
     Adds: ``--config``, ``--models``, ``--dataset``, ``--n_instructions``,
     ``--judge_model``, ``--judge_mode``, ``--judge_max_tokens``,
     ``--judge_gpus``, ``--judge_quantization``, ``--no_swap``,
-    ``--provide_explanation``, ``--rubric``, ``--generation_max_tokens``,
+    ``--provide_explanation``, ``--criteria``, ``--generation_max_tokens``,
     ``--truncate_input_chars``, ``--matchmaker``, ``--n_matches``,
     ``--ignore_cache``, ``--ignore_score_cache``, ``--output_dir``.
 

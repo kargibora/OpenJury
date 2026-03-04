@@ -1,28 +1,31 @@
-"""Multi-criteria rubric evaluation for OpenJury.
+"""Backward-compatibility shim for ``openjury.rubrics``.
 
-Provides structured, interpretable scoring of LLM completions along
-configurable dimensions (fluency, usefulness, clarity, style, adherence, etc.)
-using an LLM judge with custom rubrics.
+.. deprecated::
+    Use ``openjury.criteria`` directly. This package re-exports all public
+    symbols under their legacy names for backward compatibility.
 
-Quick start::
+Quick migration guide::
 
-    from openjury.rubrics import RubricScorer, get_rubric
-    from openjury.models.factory import make_model
+    # OLD
+    from openjury.rubrics import RubricScorer, get_rubric, Rubric
 
-    judge = make_model("VLLM/Qwen/Qwen2.5-32B-Instruct")
-    rubric = get_rubric("default")
-    scorer = RubricScorer(judge_model=judge, rubric=rubric)
-
-    scores = scorer.score(
-        instructions=["Write a poem"],
-        completions=["Roses are red..."],
-        model_name="test",
-    )
+    # NEW
+    from openjury.criteria import CriteriaScorer, get_criteria, Criteria
 """
 
-from openjury.rubrics.schema import Rubric, RubricDimension, RubricScore, PairwiseRubricResult
-from openjury.rubrics.defaults import DEFAULT_RUBRICS, RUBRIC_REGISTRY, get_rubric, register_rubric
-from openjury.rubrics.scorer import RubricScorer
+from openjury.rubrics.schema import (  # noqa: F401
+    Rubric,
+    RubricDimension,
+    RubricScore,
+    PairwiseRubricResult,
+)
+from openjury.rubrics.defaults import (  # noqa: F401
+    DEFAULT_RUBRICS,
+    RUBRIC_REGISTRY,
+    get_rubric,
+    register_rubric,
+)
+from openjury.rubrics.scorer import RubricScorer  # noqa: F401
 
 __all__ = [
     "Rubric",

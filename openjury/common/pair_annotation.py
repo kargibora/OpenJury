@@ -51,7 +51,7 @@ class PairwiseCacheConfig:
     """Cache-key configuration for pairwise judging."""
 
     judge: str
-    rubric: str
+    criteria: str
     model_key: str
     dataset_exact: str
     n_instructions: int | None
@@ -63,7 +63,7 @@ class SamplewiseCacheConfig:
     """Cache-key configuration for two-side samplewise judging."""
 
     judge: str
-    rubric: str
+    criteria: str
     model_key_a: str
     model_key_b: str
     dataset_exact: str
@@ -76,7 +76,7 @@ def derive_preference_from_scores(
     scores_b: dict[str, float],
     weights: dict[str, float],
 ) -> float:
-    """Derive preference from weighted rubric averages.
+    """Derive preference from weighted criteria averages.
 
     Returns:
         ``0.0`` if A wins, ``1.0`` if B wins, ``0.5`` for tie/unknown.
@@ -180,7 +180,7 @@ def score_pairs_pairwise(
 
         cached = score_cache.get(
             judge=cache_config.judge,
-            rubric=cache_config.rubric,
+            criteria=cache_config.criteria,
             model=cache_config.model_key,
             dataset=cache_config.dataset_exact,
             n=cache_config.n_instructions,
@@ -199,7 +199,7 @@ def score_pairs_pairwise(
         ):
             cached_all = score_cache.get(
                 judge=cache_config.judge,
-                rubric=cache_config.rubric,
+                criteria=cache_config.criteria,
                 model=cache_config.model_key,
                 dataset=cache_config.dataset_base,
                 n=None,
@@ -285,7 +285,7 @@ def score_pairs_pairwise(
         score_cache.put(
             cache_entries,
             judge=cache_config.judge,
-            rubric=cache_config.rubric,
+            criteria=cache_config.criteria,
             model=cache_config.model_key,
             dataset=cache_config.dataset_exact,
             n=cache_config.n_instructions,
@@ -336,7 +336,7 @@ def score_pairs_samplewise(
 
         cached = score_cache.get(
             judge=cache_config.judge,
-            rubric=cache_config.rubric,
+            criteria=cache_config.criteria,
             model=cache_model_key,
             dataset=cache_config.dataset_exact,
             n=cache_config.n_instructions,
@@ -355,7 +355,7 @@ def score_pairs_samplewise(
         ):
             cached_all = score_cache.get(
                 judge=cache_config.judge,
-                rubric=cache_config.rubric,
+                criteria=cache_config.criteria,
                 model=cache_model_key,
                 dataset=cache_config.dataset_base,
                 n=None,
@@ -380,7 +380,7 @@ def score_pairs_samplewise(
             score_cache.put(
                 ms_a_list,
                 judge=cache_config.judge,
-                rubric=cache_config.rubric,
+                criteria=cache_config.criteria,
                 model=cache_key_a,
                 dataset=cache_config.dataset_exact,
                 n=cache_config.n_instructions,
@@ -393,7 +393,7 @@ def score_pairs_samplewise(
             score_cache.put(
                 ms_b_list,
                 judge=cache_config.judge,
-                rubric=cache_config.rubric,
+                criteria=cache_config.criteria,
                 model=cache_key_b,
                 dataset=cache_config.dataset_exact,
                 n=cache_config.n_instructions,

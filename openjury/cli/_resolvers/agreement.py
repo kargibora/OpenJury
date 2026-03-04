@@ -50,7 +50,7 @@ def _apply_agreement_cli_overrides(
             ("language", lambda c, v: setattr(c, "language", v)),
             ("seed", lambda c, v: setattr(c, "seed", v)),
             ("balance_by", lambda c, v: setattr(c, "balance_by", v)),
-            ("rubric", lambda c, v: setattr(c, "rubric", v)),
+            ("criteria", lambda c, v: setattr(c, "criteria", v)),
             ("truncate_instruction", lambda c, v: setattr(c, "truncate_instruction", v)),
             ("judge_model", lambda c, v: setattr(c.judge, "model", v)),
             ("judge_mode", lambda c, v: setattr(c.judge, "mode", v)),
@@ -119,7 +119,7 @@ def resolve_agreement_cli(
             language=args.language,
             seed=args.seed,
             balance_by=args.balance_by,
-            rubric=args.rubric,
+            criteria=args.criteria,
             ignore_score_cache=args.ignore_score_cache,
             truncate_instruction=args.truncate_instruction,
         )

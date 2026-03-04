@@ -35,8 +35,8 @@ class BTAnalysis:
     Attributes:
         model: A fitted (or unfitted) FeatureBradleyTerry providing dimension_names
                and regularization settings.
-        scores_A: DataFrame of rubric scores for model A completions.
-        scores_B: DataFrame of rubric scores for model B completions.
+        scores_A: DataFrame of criteria scores for model A completions.
+        scores_B: DataFrame of criteria scores for model B completions.
         preferences: Series of pairwise preferences (1.0 = prefer A).
         metadata: DataFrame with grouping columns (e.g. ``annotator_type``,
                   ``language``, ``topic``).  Must be aligned with the other inputs.

@@ -22,7 +22,7 @@ from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
 from openjury.pipelines.generation import generate_instructions
 from openjury.models.factory import make_model
-from openjury.rubrics import get_rubric
+from openjury.criteria import get_criteria
 from openjury.cache.scores import score_cache
 from openjury.analysis.arena import analyze_arena_annotations as analyze_arena_stage
 from openjury.pipelines.annotate import load_arena_annotations, save_arena_annotations
@@ -35,7 +35,7 @@ from openjury.pipelines.annotate import load_arena_annotations, save_arena_annot
 
 def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
     """Run generation + judging and return annotation payload for analysis."""
-    rubric = _load_rubric(config.rubric)
+    criteria = _load_criteria(config.criteria)
 
     ds_opts = config.dataset_options
     cache_dataset = ds_opts.cache_key()
@@ -75,11 +75,11 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
     judge_cfg = config.judge
     judge_model_config = judge_cfg.to_model_config()
     judge_model = make_model(judge_cfg.model, config=judge_model_config)
-    rubric_name_key = config.rubric if not Path(config.rubric).is_file() else rubric.name
+    criteria_name_key = config.criteria if not Path(config.criteria).is_file() else criteria.name
 
     arena_judge = ArenaJudge(
         judge_model=judge_model,
-        rubric=rubric,
+        criteria=criteria,
         provide_explanation=judge_cfg.provide_explanation,
         pairwise_prompt_style=judge_cfg.pairwise_prompt_style,
     )
@@ -92,7 +92,7 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
             completions=completions,
             instructions=instructions,
             judge_model=judge_cfg.model,
-            rubric_name=rubric_name_key,
+            criteria_name=criteria_name_key,
             dataset=cache_dataset,
             n_instructions=config.n_instructions,
             ignore_score_cache=config.ignore_score_cache,
@@ -114,14 +114,14 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
             use_tqdm=True,
         )
 
-    rubric_def: dict[str, Any] = {}
-    for dim in rubric.dimensions:
-        rubric_def[dim.name] = {
-            "description": dim.description,
-            "scale_min": dim.scale_min,
-            "scale_max": dim.scale_max,
-            "weight": dim.weight,
-            **({"score_references": dim.score_references} if dim.score_references else {}),
+    criteria_def: dict[str, Any] = {}
+    for c in criteria.criteria:
+        criteria_def[c.name] = {
+            "description": c.description,
+            "scale_min": c.scale_min,
+            "scale_max": c.scale_max,
+            "weight": c.weight,
+            **({"score_references": c.score_references} if c.score_references else {}),
         }
 
     for m in match_results:
@@ -142,11 +142,11 @@ def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
             "judge_mode": judge_cfg.mode,
             "pairwise_prompt_style": judge_cfg.pairwise_prompt_style,
             "matchmaker": config.matchmaker.strategy,
-            "rubric": rubric_name_key,
+            "criteria": criteria_name_key,
             "n_instructions": n,
         },
-        "rubric_definition": rubric_def,
-        "dimension_names": list(rubric.dimension_names),
+        "criteria_definition": criteria_def,
+        "criterion_names": list(criteria.criterion_names),
         "instruction_metadata": instruction_metadata,
         "model_scores": {
             model: [
@@ -215,8 +215,8 @@ def _load_arena_annotation_runtime(output_dir: str | Path) -> dict[str, Any]:
     ]
     return {
         "metadata": data["metadata"],
-        "rubric_definition": data.get("rubric_definition", {}),
-        "dimension_names": data.get("dimension_names", []),
+        "criteria_definition": data.get("criteria_definition", data.get("rubric_definition", {})),
+        "criterion_names": data.get("criterion_names", data.get("dimension_names", [])),
         "instruction_metadata": data.get("instruction_metadata", []),
         "model_scores": model_scores,
         "matches": matches,
@@ -374,7 +374,7 @@ def _resolve_scores(
     completions: dict[str, pd.DataFrame],
     instructions: list[str],
     judge_model: str,
-    rubric_name: str,
+    criteria_name: str,
     dataset: str,
     n_instructions: int | None,
     ignore_score_cache: bool,
@@ -390,12 +390,12 @@ def _resolve_scores(
     loaded from cache.
 
     Args:
-        arena_judge: The :class:`ArenaJudge` instance (with rubric + judge model).
+        arena_judge: The :class:`ArenaJudge` instance (with criteria + judge model).
         models: List of :class:`ModelEntry` from the config.
         completions: Resolved completions (from ``_resolve_completions``).
         instructions: List of instruction strings.
         judge_model: Judge model specification (for cache key).
-        rubric_name: Rubric name (for cache key).
+        criteria_name: Criteria name (for cache key).
         dataset: Dataset name (for cache key).
         n_instructions: Number of instructions (for cache key).
         ignore_score_cache: If ``True``, always re-score.
@@ -423,11 +423,11 @@ def _resolve_scores(
 
         was_cached = (
             not ignore_score_cache
-            and score_cache.exists(judge_model, rubric_name, model, dataset, n_instructions)
+            and score_cache.exists(judge_model, criteria_name, model, dataset, n_instructions)
         )
         scores = score_cache.get_or_score(
             judge=judge_model,
-            rubric=rubric_name,
+            criteria=criteria_name,
             model=model,
             dataset=dataset,
             n=n_instructions,
@@ -446,24 +446,24 @@ def _resolve_scores(
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  Rubric loading
+#  Criteria loading
 # ═════════════════════════════════════════════════════════════════════
 
 
-def _load_rubric(rubric_spec: str):
-    """Load rubric from a registry name or a JSON file path."""
-    if Path(rubric_spec).is_file():
+def _load_criteria(criteria_spec: str):
+    """Load criteria from a registry name or a JSON file path."""
+    if Path(criteria_spec).is_file():
         import json
-        from openjury.rubrics.schema import Rubric, RubricDimension
+        from openjury.criteria.schema import Criteria, Criterion
 
-        with open(rubric_spec, encoding="utf-8") as f:
+        with open(criteria_spec, encoding="utf-8") as f:
             rdata = json.load(f)
-        return Rubric(
+        return Criteria(
             name=rdata.get("name", "custom"),
             description=rdata.get("description", ""),
-            dimensions=[RubricDimension(**d) for d in rdata["dimensions"]],
+            criteria=[Criterion(**d) for d in rdata.get("criteria", rdata.get("dimensions", []))],
         )
-    return get_rubric(rubric_spec)
+    return get_criteria(criteria_spec)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -481,7 +481,7 @@ def _print_leaderboard(result: ArenaResult) -> None:
     else:
         _print_k_model_leaderboard(result)
 
-    # Dimension weights — which rubric features predict who wins
+    # Dimension weights — which criteria features predict who wins
     _print_dimension_weights(result)
 
     logger.info("═" * 70)
@@ -555,11 +555,11 @@ def _print_k_model_leaderboard(result: ArenaResult) -> None:
 
 
 def _print_dimension_weights(result: ArenaResult) -> None:
-    """Print rubric dimension weights (shared by 2-model and K-model)."""
+    """Print criteria dimension weights (shared by 2-model and K-model)."""
     if not result.dimension_weights:
         return
     logger.info("")
-    logger.info("  Rubric dimension weights (BT feature importance):")
+    logger.info("  Criteria dimension weights (BT feature importance):")
     for dim, w in sorted(result.dimension_weights.items(), key=lambda x: -abs(x[1])):
         bar = "█" * min(int(abs(w) * 20), 40)
         sign = "+" if w >= 0 else "-"

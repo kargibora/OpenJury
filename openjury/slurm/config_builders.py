@@ -48,7 +48,7 @@ def build_arena_config_dict(
             chat_template=pipeline.judge_chat_template,
             chat_template_file=pipeline.judge_chat_template_file,
         ),
-        rubric=pipeline.rubric,
+        criteria=pipeline.criteria,
         matchmaker=MatchmakerConfig(
             strategy=pipeline.matchmaker,
             n_matches=pipeline.n_matches,
@@ -92,7 +92,7 @@ def build_agreement_config_dict(
         language=ds_opts.language,
         seed=ds_opts.seed,
         balance_by=ds_opts.balance_by,
-        rubric=pipeline.rubric,
+        criteria=pipeline.criteria,
         ignore_score_cache=pipeline.ignore_score_cache,
         truncate_instruction=pipeline.truncate_instruction,
     )

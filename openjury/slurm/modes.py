@@ -314,7 +314,7 @@ def arena_mode_scripts(
         if all(
             _score_cache.exists(
                 judge=pipeline.judge_model,
-                rubric=pipeline.rubric,
+                criteria=pipeline.criteria,
                 model=model,
                 dataset=cache_dataset,
                 n=pipeline.n_instructions,

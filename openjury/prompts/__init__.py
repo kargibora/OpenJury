@@ -7,7 +7,7 @@ All ``.txt`` files under ``openjury/prompts/`` are discoverable by stem name::
     system = load_prompt("rubric_pairwise_system")    # reads rubric_pairwise_system.txt
     user   = load_prompt("rubric_pairwise_user")      # reads rubric_pairwise_user.txt
 
-Legacy templates from the pre-rubric pairwise scorer are retained with a
+Legacy templates from the pre-criteria pairwise scorer are retained with a
 ``legacy_`` prefix for backward compatibility and migration reference.
 """
 

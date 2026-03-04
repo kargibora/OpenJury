@@ -1,3 +1,16 @@
+"""BT reconstruction analysis — clean visualizations.
+
+Compares three preference-derivation strategies on the *same* rubric scores
+produced by a single LLM judge run:
+
+1. **Observed judge** — uniform average across rubric dimensions.
+2. **BT (global)** — logistic-regression weights fitted on human preferences.
+3. **BT (per-language)** — same, but fitted per language group.
+
+The key question: *do rubric dimensions carry information that, when properly
+weighted, closes the gap between the LLM judge and human annotators?*
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -8,26 +21,29 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import KFold
 
 from agreement_analysis_common import (
     COLORS,
-    add_heatmap_grid,
     add_figure_caption,
     add_figure_header,
+    add_heatmap_grid,
     annotate_heatmap_values,
     apply_plot_theme,
     collect_group_bt_fits,
     ensure_plots_dir,
     fit_bt_weights,
-    format_percent_axis,
     infer_score_dimensions,
     load_annotation_artifact,
     maybe_subsample_frame,
+    normalized_weight_dict,
     reconstruct_preferences_from_bt_model,
     reconstruct_preferences_from_bt_model_by_group,
     save_figure,
+    score_matrices,
     style_axes,
     summarize_preference_schemes,
     wrap_labels,
@@ -36,271 +52,359 @@ from agreement_analysis_common import (
 
 apply_plot_theme()
 
+# ── Palette ────────────────────────────────────────────────────────
+# Semantic scheme colours — consistent across every figure.
+C_OBSERVED = "#94a3b8"  # slate-400  (baseline, muted)
+C_GLOBAL = "#2563eb"  # blue-600   (BT global)
+C_LANG = "#059669"  # emerald-600 (BT per-language)
 
-def scheme_color(scheme: str) -> str:
-    if "Observed judge" in scheme:
-        return COLORS["judge"]
-    if "language-specific" in scheme:
-        return COLORS["human"]
-    if "(global)" in scheme:
-        return COLORS["neutral"]
-    return COLORS["band"]
+SCHEME_PALETTE = {
+    "Observed judge decision": C_OBSERVED,
+    "Human-calibrated BT (global)": C_GLOBAL,
+    "Human-calibrated BT (language-specific)": C_LANG,
+}
+
+SCHEME_SHORT = {
+    "Observed judge decision": "Uniform avg\n(judge default)",
+    "Human-calibrated BT (global)": "BT global\n(human-fitted)",
+    "Human-calibrated BT (language-specific)": "BT per-lang\n(human-fitted)",
+}
 
 
-def save_scheme_summary_plot(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
-    plot_df = weight_scheme_summary.copy().sort_values("mean_abs_centered_gap")
-    baseline_row = plot_df.loc[plot_df["scheme"] == "Observed judge decision"]
-    baseline_gap = (
-        float(baseline_row["mean_abs_centered_gap"].iloc[0])
-        if not baseline_row.empty
-        else float(plot_df["mean_abs_centered_gap"].max())
-    )
-    plot_df["scheme_color"] = plot_df["scheme"].map(scheme_color)
-    plot_df["gap_improvement_vs_observed"] = baseline_gap - plot_df["mean_abs_centered_gap"]
-    y_labels = wrap_labels(plot_df["scheme"], width=24)
-    fig, ax = plt.subplots(figsize=(11.6, 5.8))
-    fig.subplots_adjust(top=0.8, bottom=0.16)
+def _sc(name: str) -> str:
+    """Scheme → colour."""
+    return SCHEME_PALETTE.get(name, COLORS["band"])
+
+
+def _ss(name: str) -> str:
+    """Scheme → short label."""
+    return SCHEME_SHORT.get(name, name)
+
+
+def _pct(v: float) -> str:
+    return f"{v * 100:.1f}%"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 1 — Weight Profile: Uniform vs Human-Fitted BT Weights
+# ═══════════════════════════════════════════════════════════════════
+
+
+def save_weight_profile_plot(
+    dimension_names: list[str],
+    global_weights: dict[str, float],
+    group_fits: dict[str, dict],
+    path: Path,
+) -> None:
+    """Grouped bar chart: uniform vs global BT vs per-language spread."""
+    k = len(dimension_names)
+    uniform = {d: 1.0 / k for d in dimension_names}
+    norm_global = normalized_weight_dict(global_weights)
+
+    # Per-language normalised weights for IQR spread
+    lang_matrix = None
+    if group_fits:
+        rows = []
+        for fit in group_fits.values():
+            nw = normalized_weight_dict(fit["weights"])
+            rows.append([nw.get(d, 0.0) for d in dimension_names])
+        if len(rows) > 1:
+            lang_matrix = np.array(rows)
+
+    dims = [d.capitalize() for d in dimension_names]
+    x = np.arange(k)
+    bw = 0.28
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    fig.subplots_adjust(top=0.82, bottom=0.14, left=0.09, right=0.96)
     add_figure_header(
         fig,
-        title="Human-Calibrated BT Reconstruction",
-        subtitle="Lower centered Elo gap means rankings closer to humans.",
+        title="Rubric Dimension Weights",
+        subtitle="Uniform average vs human-calibrated Bradley-Terry weights",
     )
 
-    y = np.arange(len(plot_df))
-    style_axes(ax, grid_axis="x")
-    ax.axvline(
-        baseline_gap,
-        linestyle="--",
-        color=COLORS["muted"],
-        linewidth=1.3,
-        zorder=0,
+    # Uniform bars
+    ax.bar(
+        x - bw,
+        [uniform[d] for d in dimension_names],
+        bw,
+        color=C_OBSERVED,
+        edgecolor="#fff",
+        linewidth=0.8,
+        label="Uniform (judge default)",
+        zorder=3,
     )
-    for yi, (_, row) in enumerate(plot_df.iterrows()):
-        ax.plot(
-            [row["mean_abs_centered_gap"], baseline_gap],
-            [yi, yi],
-            color=COLORS["band"],
-            linewidth=5.0,
-            solid_capstyle="round",
-            zorder=1,
-        )
-        ax.scatter(
-            baseline_gap,
-            yi,
-            s=48,
-            color="#cbd5e1",
-            edgecolor="#ffffff",
+    # Global BT bars
+    ax.bar(
+        x,
+        [norm_global.get(d, 0) for d in dimension_names],
+        bw,
+        color=C_GLOBAL,
+        edgecolor="#fff",
+        linewidth=0.8,
+        label="BT global (human-fitted)",
+        zorder=3,
+    )
+    # Per-language spread
+    if lang_matrix is not None:
+        medians = np.median(lang_matrix, axis=0)
+        q25 = np.percentile(lang_matrix, 25, axis=0)
+        q75 = np.percentile(lang_matrix, 75, axis=0)
+        ax.bar(
+            x + bw,
+            medians,
+            bw,
+            color=C_LANG,
+            edgecolor="#fff",
             linewidth=0.8,
-            zorder=2,
-        )
-        ax.scatter(
-            row["mean_abs_centered_gap"],
-            yi,
-            s=140,
-            color=row["scheme_color"],
-            edgecolor="#ffffff",
-            linewidth=1.1,
+            label=f"BT per-language median (n={len(lang_matrix)})",
             zorder=3,
         )
-        label = (
-            f"{row['mean_abs_centered_gap']:.1f}"
-            if row["scheme"] == "Observed judge decision"
-            else f"{row['mean_abs_centered_gap']:.1f} ({row['gap_improvement_vs_observed']:+.1f})"
+        ax.errorbar(
+            x + bw,
+            medians,
+            yerr=[medians - q25, q75 - medians],
+            fmt="none",
+            ecolor=C_LANG,
+            elinewidth=1.5,
+            capsize=3,
+            capthick=1.2,
+            zorder=4,
+            alpha=0.7,
         )
-        ax.text(
-            max(row["mean_abs_centered_gap"], baseline_gap) + 1.0,
-            yi,
-            label,
-            va="center",
-            fontsize=8.5,
-            color=COLORS["muted"],
-        )
-    ax.set_yticks(y)
-    ax.set_yticklabels(y_labels)
-    ax.text(
-        0.0,
-        1.02,
-        "Dashed line = observed judge baseline | labels show mean gap and improvement vs baseline",
-        transform=ax.transAxes,
+
+    ax.axhline(1.0 / k, ls=":", color=COLORS["muted"], lw=1, zorder=1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(dims, fontsize=10.5)
+    ax.set_ylabel("Normalised weight")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
+    style_axes(ax, grid_axis="y")
+    ax.legend(
+        loc="upper right",
         fontsize=9,
-        color=COLORS["muted"],
+        frameon=True,
+        facecolor="#fff",
+        edgecolor=COLORS["band"],
     )
-    ax.set_title("Mean Centered Elo Gap by Scheme", pad=14, loc="left")
-    ax.set_xlabel("Mean |centered scheme Elo - centered human Elo|")
-    ax.set_ylabel("Preference scheme")
-    ax.set_xlim(0, max(plot_df["mean_abs_centered_gap"].max(), baseline_gap) * 1.24)
-    ax.invert_yaxis()
-    add_figure_caption(
-        fig,
-        left="Positive improvement means less Elo drift than the observed judge decision.",
-        right=f"n = {int(plot_df['n_samples'].iloc[0]):,} pairwise comparisons",
-    )
+    add_figure_caption(fig, left="", right=f"{k} dimensions")
     save_figure(fig, path)
 
 
-def save_scheme_metric_plot(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
-    plot_df = weight_scheme_summary.copy().sort_values("mean_abs_centered_gap")
-    y = np.arange(len(plot_df))
-    y_labels = wrap_labels(plot_df["scheme"], width=24)
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 2 — Alignment Uplift: grouped metric bars with deltas
+# ═══════════════════════════════════════════════════════════════════
+
+
+def save_alignment_uplift_plot(
+    scheme_summary: pd.DataFrame,
+    path: Path,
+) -> None:
+    """Side-by-side bars for accuracy & Elo gap with delta annotations."""
+    df = scheme_summary.copy().set_index("scheme")
+    schemes = [s for s in SCHEME_SHORT if s in df.index]
+    if not schemes:
+        return
+
+    fig, axes = plt.subplots(
+        1, 2, figsize=(11.5, 4.6), gridspec_kw={"wspace": 0.35}
+    )
+    fig.subplots_adjust(top=0.80, bottom=0.22, left=0.08, right=0.97)
+    add_figure_header(
+        fig,
+        title="Does Human-Calibrated Weighting Help?",
+        subtitle=(
+            "Comparing uniform-average judge decisions "
+            "vs BT-reweighted preferences"
+        ),
+    )
+
+    short = [_ss(s) for s in schemes]
+    colors = [_sc(s) for s in schemes]
+    x = np.arange(len(schemes))
+
+    # ── Left: Agreement with humans ──
+    ax = axes[0]
+    accs = [float(df.loc[s, "accuracy_vs_human"]) for s in schemes]
+    bars = ax.bar(
+        x, accs, 0.52, color=colors, edgecolor="#fff", linewidth=1, zorder=3
+    )
+    for bar, val in zip(bars, accs):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.006,
+            _pct(val),
+            ha="center", va="bottom", fontsize=9.5, fontweight="semibold",
+        )
+    style_axes(ax, grid_axis="y")
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, fontsize=9)
+    ax.set_ylabel("3-class agreement")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
+    ax.set_ylim(0, max(accs) * 1.18)
+    ax.set_title(
+        "Agreement with humans ↑", fontsize=11, pad=10, loc="left", color=COLORS["text"]
+    )
+
+    # ── Right: Mean Elo gap (lower = better) ──
+    ax = axes[1]
+    gaps = [float(df.loc[s, "mean_abs_centered_gap"]) for s in schemes]
+    bars = ax.bar(
+        x, gaps, 0.52, color=colors, edgecolor="#fff", linewidth=1, zorder=3
+    )
+    for bar, val in zip(bars, gaps):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.6,
+            f"{val:.1f}",
+            ha="center", va="bottom", fontsize=9.5, fontweight="semibold",
+        )
+    style_axes(ax, grid_axis="y")
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, fontsize=9)
+    ax.set_ylabel("Mean |centered Elo gap|")
+    ax.set_ylim(0, max(gaps) * 1.18)
+    ax.set_title(
+        "Ranking gap vs humans ↓", fontsize=11, pad=10, loc="left", color=COLORS["text"]
+    )
+
+    n = int(df["n_samples"].iloc[0])
+    add_figure_caption(fig, left="", right=f"n = {n:,} pairwise comparisons")
+    save_figure(fig, path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 3 — Per-Model Elo Scatter: scheme Elo vs human Elo
+# ═══════════════════════════════════════════════════════════════════
+
+
+def save_elo_scatter_plot(
+    scheme_model_gaps: pd.DataFrame,
+    path: Path,
+) -> None:
+    """One panel per scheme: centered scheme Elo vs centered human Elo."""
+    schemes = scheme_model_gaps["scheme"].unique().tolist()
+    n_schemes = len(schemes)
+    if n_schemes == 0:
+        return
 
     fig, axes = plt.subplots(
         1,
-        2,
-        figsize=(13.4, 5.8),
+        n_schemes,
+        figsize=(5.2 * n_schemes, 5.2),
+        squeeze=False,
         sharey=True,
-        gridspec_kw={"width_ratios": [1.0, 1.0]},
     )
-    fig.subplots_adjust(top=0.8, bottom=0.16, wspace=0.18)
+    axes = axes[0]
+    fig.subplots_adjust(
+        top=0.82, bottom=0.14, wspace=0.12, left=0.07, right=0.97
+    )
     add_figure_header(
         fig,
-        title="BT Scheme Metrics",
-        subtitle="Agreement and tie rate are shown separately to keep the comparison readable.",
+        title="Per-Model Elo: Scheme vs Human",
+        subtitle="Points on the diagonal = perfect agreement with human ranking",
     )
 
-    metric_specs = [
-        ("accuracy_vs_human", "Agreement with humans", COLORS["human"], "x"),
-        ("scheme_tie_rate", "Tie rate", COLORS["judge"], "x"),
-    ]
-    for ax, (column, title, color, axis_name) in zip(axes, metric_specs):
-        style_axes(ax, grid_axis="x")
-        ax.scatter(
-            plot_df[column],
-            y,
-            s=110,
-            color=color,
-            edgecolor="#ffffff",
-            linewidth=1.0,
-            zorder=3,
+    for i, (scheme, ax) in enumerate(zip(schemes, axes)):
+        sub = scheme_model_gaps[scheme_model_gaps["scheme"] == scheme].copy()
+        c = _sc(scheme)
+
+        # Identity line + tolerance band
+        lo = (
+            min(
+                sub["human_elo_centered"].min(),
+                sub["scheme_elo_centered"].min(),
+            )
+            - 20
         )
-        ax.hlines(y, 0, plot_df[column], color=COLORS["band"], linewidth=4.0, zorder=1)
-        ax.set_title(title, pad=14, loc="left")
-        ax.set_xlabel(title)
-        format_percent_axis(ax, axis=axis_name)
-        ax.set_xlim(0, min(1.0, float(plot_df[column].max()) + 0.08))
-    axes[0].set_yticks(y)
-    axes[0].set_yticklabels(y_labels)
-    axes[0].set_ylabel("Preference scheme")
-    axes[1].tick_params(axis="y", left=False, labelleft=False)
-    axes[0].invert_yaxis()
-
-    add_figure_caption(
-        fig,
-        left="Same schemes as the Elo-gap view, but split out so the metrics are easier to compare.",
-        right=f"{len(plot_df)} scheme variants",
-    )
-    save_figure(fig, path)
-
-
-def save_elo_gap_render_plot(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
-    plot_df = weight_scheme_summary.copy().sort_values("mean_abs_centered_gap")
-    plot_df["scheme_color"] = plot_df["scheme"].map(scheme_color)
-    baseline_row = plot_df.loc[plot_df["scheme"] == "Observed judge decision"]
-    baseline_gap = (
-        float(baseline_row["mean_abs_centered_gap"].iloc[0])
-        if not baseline_row.empty
-        else float(plot_df["mean_abs_centered_gap"].max())
-    )
-    plot_df["gap_improvement_vs_observed"] = baseline_gap - plot_df["mean_abs_centered_gap"]
-
-    fig, ax = plt.subplots(figsize=(12.8, 5.8))
-    fig.subplots_adjust(top=0.8, bottom=0.16)
-    add_figure_header(
-        fig,
-        title="Centered Elo Gap Render",
-        subtitle=(
-            "Each row shows the typical and worst-case Elo drift for one decision rule after "
-            "reconstructing preferences from the same rubric scores."
-        ),
-    )
-
-    y = np.arange(len(plot_df))
-    style_axes(ax, grid_axis="x")
-    ax.axvline(baseline_gap, linestyle="--", color=COLORS["muted"], linewidth=1.3, zorder=0)
-    for yi, (_, row) in enumerate(plot_df.iterrows()):
+        hi = (
+            max(
+                sub["human_elo_centered"].max(),
+                sub["scheme_elo_centered"].max(),
+            )
+            + 20
+        )
         ax.plot(
-            [row["mean_abs_centered_gap"], row["max_abs_centered_gap"]],
-            [yi, yi],
+            [lo, hi], [lo, hi], ls="--", color=COLORS["band"], lw=1.2, zorder=1
+        )
+        ax.fill_between(
+            [lo, hi],
+            [lo - 30, hi - 30],
+            [lo + 30, hi + 30],
             color=COLORS["band"],
-            linewidth=7.0,
-            solid_capstyle="round",
-            zorder=1,
+            alpha=0.12,
+            zorder=0,
         )
+
         ax.scatter(
-            row["mean_abs_centered_gap"],
-            yi,
-            s=140,
-            color=row["scheme_color"],
-            edgecolor="#ffffff",
-            linewidth=1.0,
+            sub["human_elo_centered"],
+            sub["scheme_elo_centered"],
+            s=44,
+            color=c,
+            edgecolor="#fff",
+            linewidth=0.6,
+            alpha=0.85,
             zorder=3,
         )
-        ax.scatter(
-            row["max_abs_centered_gap"],
-            yi,
-            s=86,
-            marker="D",
-            color=row["scheme_color"],
-            edgecolor="#ffffff",
-            linewidth=0.9,
-            alpha=0.9,
-            zorder=3,
+
+        spearman = sub["human_elo_centered"].corr(
+            sub["scheme_elo_centered"], method="spearman"
         )
-    ax.set_yticks(y)
-    ax.set_yticklabels(wrap_labels(plot_df["scheme"], width=24))
-    ax.set_xlabel("Centered Elo gap relative to human ranking")
-    ax.set_ylabel("Preference scheme")
-    ax.set_title("Mean vs Worst-Case Elo Gap", pad=14, loc="left")
-    ax.text(
-        0.0,
-        1.02,
-        "Circle = mean absolute centered gap | diamond = largest absolute model-level gap",
-        transform=ax.transAxes,
-        fontsize=9,
-        color=COLORS["muted"],
-    )
-    ax.set_xlim(0, plot_df["max_abs_centered_gap"].max() * 1.28)
-    ax.invert_yaxis()
-    add_figure_caption(
-        fig,
-        left="The dashed line marks the observed judge baseline.",
-        right=f"n = {int(plot_df['n_samples'].iloc[0]):,} pairwise comparisons",
-    )
+        mae = sub["abs_centered_elo_gap"].mean()
+
+        style_axes(ax, grid_axis=None)
+        ax.set_xlabel("Human Elo (centered)")
+        if i == 0:
+            ax.set_ylabel("Scheme Elo (centered)")
+        ax.set_title(
+            f"{_ss(scheme).replace(chr(10), ' ')}   ρ={spearman:.2f}  MAE={mae:.0f}",
+            fontsize=9.5, pad=8,
+        )
+        ax.set_aspect("equal", adjustable="datalim")
+
+    add_figure_caption(fig, left="", right="")
     save_figure(fig, path)
 
 
-def save_scheme_model_heatmap(
-    weight_scheme_summary: pd.DataFrame,
-    weight_scheme_model_gaps: pd.DataFrame,
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 4 — Per-Model Heatmap (top-N most-affected models)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def save_model_heatmap(
+    scheme_summary: pd.DataFrame,
+    scheme_model_gaps: pd.DataFrame,
     path: Path,
     *,
-    top_models: int,
+    top_models: int = 15,
 ) -> None:
     model_order = (
-        weight_scheme_model_gaps.groupby(["model", "short_model"], as_index=False)
-        .agg(max_abs_centered_gap=("abs_centered_elo_gap", "max"))
-        .sort_values("max_abs_centered_gap", ascending=False)
+        scheme_model_gaps.groupby(["model", "short_model"], as_index=False)
+        .agg(max_gap=("abs_centered_elo_gap", "max"))
+        .sort_values("max_gap", ascending=False)
         .head(top_models)
     )
-    scheme_order = weight_scheme_summary.sort_values("mean_abs_centered_gap")["scheme"].tolist()
+    scheme_order = scheme_summary.sort_values("mean_abs_centered_gap")[
+        "scheme"
+    ].tolist()
     heatmap = (
-        weight_scheme_model_gaps.pivot_table(
+        scheme_model_gaps.pivot_table(
             index="scheme",
             columns="short_model",
             values="centered_elo_gap",
-        ).reindex(index=scheme_order, columns=model_order["short_model"].tolist())
+        ).reindex(
+            index=scheme_order,
+            columns=model_order["short_model"].tolist(),
+        )
     )
     vmax = np.nanmax(np.abs(heatmap.to_numpy(dtype=float)))
 
-    fig, ax = plt.subplots(figsize=(14.8, 6.1))
-    fig.subplots_adjust(top=0.83, bottom=0.17)
-    add_figure_header(
-        fig,
-        title="Model-Level Centered Elo Gap by Scheme",
-        subtitle=(
-            "Cells show centered scheme Elo minus centered human Elo for the models with the "
-            "largest absolute drift. Negative values mean the scheme rates the model below humans."
-        ),
-    )
+    n_rows, n_cols = heatmap.shape
+    fig_w = max(10, 0.95 * n_cols + 3)
+    fig_h = max(3.6, 1.1 * n_rows + 2.4)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    fig.subplots_adjust(top=0.83, bottom=0.18)
+    add_figure_header(fig, title="Centered Elo Gap by Model × Scheme")
+
     im = ax.imshow(
         heatmap.fillna(0.0).to_numpy(),
         aspect="auto",
@@ -310,165 +414,368 @@ def save_scheme_model_heatmap(
     )
     style_axes(ax, grid_axis=None)
     add_heatmap_grid(ax, heatmap.shape)
-    annotate_heatmap_values(ax, heatmap.to_numpy(dtype=float), fmt="{:+.0f}", limit=120)
-    ax.set_title("Where Scheme-Level Elo Drift Concentrates", pad=14, loc="left")
-    ax.set_xlabel("Model")
-    ax.set_ylabel("Preference scheme")
-    ax.set_xticks(np.arange(len(heatmap.columns)))
-    ax.set_xticklabels(wrap_labels(heatmap.columns, width=16), rotation=35, ha="right")
-    ax.set_yticks(np.arange(len(heatmap.index)))
-    ax.set_yticklabels(wrap_labels(heatmap.index, width=24))
-    cb = plt.colorbar(im, ax=ax, pad=0.02)
-    cb.set_label("Centered scheme Elo - centered human Elo")
-    add_figure_caption(fig, left="", right=f"Top {len(heatmap.columns)} models by absolute centered gap")
+    annotate_heatmap_values(
+        ax, heatmap.to_numpy(dtype=float), fmt="{:+.0f}", limit=120
+    )
+    ax.set_xticks(np.arange(n_cols))
+    ax.set_xticklabels(heatmap.columns, rotation=40, ha="right", fontsize=8.5)
+    ax.set_yticks(np.arange(n_rows))
+    ax.set_yticklabels(
+        [_ss(s).replace("\n", " ") for s in heatmap.index], fontsize=9
+    )
+    cb = plt.colorbar(im, ax=ax, pad=0.02, shrink=0.85)
+    cb.set_label("Scheme Elo − Human Elo (centered)", fontsize=9)
+    add_figure_caption(
+        fig, left="", right=f"Top {n_cols} most-affected models"
+    )
     save_figure(fig, path)
 
 
-def save_probability_summary_plot(
-    reconstruction_table: pd.DataFrame,
-    path: Path,
-    scheme_cols: list[str],
-) -> None:
-    rows: list[dict[str, float | str]] = []
-    for scheme in scheme_cols:
-        pref_col = f"{scheme}_pref"
-        proba_col = f"{scheme}_proba_a"
-        valid = reconstruction_table[pref_col].notna()
-        if not valid.any():
-            continue
-        rows.append(
-            {
-                "scheme": scheme,
-                "mean_proba_a": float(reconstruction_table.loc[valid, proba_col].mean()),
-                "tie_rate": float((reconstruction_table.loc[valid, pref_col] == 0.5).mean()),
-            }
-        )
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 5 — 4-Panel Summary Dashboard
+# ═══════════════════════════════════════════════════════════════════
 
-    plot_df = pd.DataFrame(rows)
-    if plot_df.empty:
-        fig, ax = plt.subplots(figsize=(8.0, 3.2))
-        style_axes(ax, grid_axis=None)
-        ax.text(
-            0.5,
-            0.5,
-            "No BT probability summaries available.",
-            ha="center",
-            va="center",
-            fontsize=11,
-            color=COLORS["muted"],
-        )
-        ax.set_axis_off()
-        save_figure(fig, path)
+
+def save_dashboard_plot(
+    scheme_summary: pd.DataFrame,
+    dimension_names: list[str],
+    global_weights: dict[str, float],
+    path: Path,
+) -> None:
+    """Compact 2×2 summary card."""
+    df = scheme_summary.copy().set_index("scheme")
+    schemes = [s for s in SCHEME_SHORT if s in df.index]
+    if not schemes:
         return
 
-    labels = wrap_labels(plot_df["scheme"], width=20)
-    fig, axes = plt.subplots(1, 2, figsize=(13.8, 5.6))
-    fig.subplots_adjust(top=0.82, bottom=0.16, wspace=0.24)
+    fig = plt.figure(figsize=(14, 8.5))
+    fig.subplots_adjust(top=0.88, bottom=0.08, hspace=0.42, wspace=0.30)
     add_figure_header(
         fig,
-        title="BT Reconstruction Probability Summary",
+        title="BT Reconstruction — Summary Dashboard",
         subtitle=(
-            "Probability outputs come directly from the human-fitted Bradley-Terry model before "
-            "the tie band converts them back into A / tie / B preferences."
+            "Effect of human-calibrated rubric weighting "
+            "on LLM judge alignment"
         ),
     )
-    axes[0].bar(
-        labels,
-        plot_df["mean_proba_a"],
-        color=COLORS["human"],
-        edgecolor="#ffffff",
-        linewidth=1.0,
-    )
-    style_axes(axes[0], grid_axis="y")
-    axes[0].axhline(0.5, linestyle="--", color=COLORS["muted"], linewidth=1.1)
-    axes[0].set_title("Mean Predicted P(A wins)", pad=14, loc="left")
-    axes[0].set_ylabel("Average probability")
-    format_percent_axis(axes[0], axis="y")
-    axes[0].tick_params(axis="x", rotation=18)
-    axes[0].set_ylim(0, min(1.0, plot_df["mean_proba_a"].max() + 0.12))
 
-    axes[1].bar(
-        labels,
-        plot_df["tie_rate"],
-        color=COLORS["judge"],
-        edgecolor="#ffffff",
-        linewidth=1.0,
+    gs = fig.add_gridspec(2, 2, left=0.07, right=0.96, top=0.82, bottom=0.10)
+
+    short = [_ss(s) for s in schemes]
+    colors = [_sc(s) for s in schemes]
+
+    # ── Panel A: Agreement ──
+    ax = fig.add_subplot(gs[0, 0])
+    accs = [float(df.loc[s, "accuracy_vs_human"]) for s in schemes]
+    bars = ax.bar(
+        range(len(schemes)),
+        accs,
+        0.55,
+        color=colors,
+        edgecolor="#fff",
+        lw=1,
+        zorder=3,
     )
-    style_axes(axes[1], grid_axis="y")
-    axes[1].set_title("Tie Rate After BT Model Reconstruction", pad=14, loc="left")
-    axes[1].set_ylabel("Tie rate")
-    format_percent_axis(axes[1], axis="y")
-    axes[1].tick_params(axis="x", rotation=18)
-    axes[1].set_ylim(0, min(1.0, plot_df["tie_rate"].max() + 0.12))
-    add_figure_caption(fig, left="", right=f"{len(plot_df)} scheme variants")
+    for bar, val in zip(bars, accs):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.005,
+            _pct(val),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="semibold",
+        )
+    ax.set_xticks(range(len(schemes)))
+    ax.set_xticklabels(short, fontsize=8.5)
+    ax.set_ylabel("Agreement")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
+    ax.set_ylim(0, max(accs) * 1.16)
+    style_axes(ax, grid_axis="y")
+    ax.set_title(
+        "A   Human Agreement ↑",
+        loc="left",
+        fontsize=10.5,
+        fontweight="semibold",
+    )
+
+    # ── Panel B: Mean Elo Gap ──
+    ax = fig.add_subplot(gs[0, 1])
+    gaps = [float(df.loc[s, "mean_abs_centered_gap"]) for s in schemes]
+    bars = ax.bar(
+        range(len(schemes)),
+        gaps,
+        0.55,
+        color=colors,
+        edgecolor="#fff",
+        lw=1,
+        zorder=3,
+    )
+    for bar, val in zip(bars, gaps):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.5,
+            f"{val:.1f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="semibold",
+        )
+    ax.set_xticks(range(len(schemes)))
+    ax.set_xticklabels(short, fontsize=8.5)
+    ax.set_ylabel("Mean |ΔElo| vs humans")
+    ax.set_ylim(0, max(gaps) * 1.18)
+    style_axes(ax, grid_axis="y")
+    ax.set_title(
+        "B   Elo Gap ↓", loc="left", fontsize=10.5, fontweight="semibold"
+    )
+
+    # ── Panel C: Weight Profile ──
+    ax = fig.add_subplot(gs[1, 0])
+    k = len(dimension_names)
+    uniform_w = 1.0 / k
+    norm_g = normalized_weight_dict(global_weights)
+    dims_cap = [d.capitalize() for d in dimension_names]
+    xd = np.arange(k)
+    bwd = 0.35
+    ax.bar(
+        xd - bwd / 2,
+        [uniform_w] * k,
+        bwd,
+        color=C_OBSERVED,
+        edgecolor="#fff",
+        lw=0.8,
+        label="Uniform",
+        zorder=3,
+    )
+    ax.bar(
+        xd + bwd / 2,
+        [norm_g.get(d, 0) for d in dimension_names],
+        bwd,
+        color=C_GLOBAL,
+        edgecolor="#fff",
+        lw=0.8,
+        label="BT (human-fitted)",
+        zorder=3,
+    )
+    ax.axhline(uniform_w, ls=":", color=COLORS["muted"], lw=0.8)
+    ax.set_xticks(xd)
+    ax.set_xticklabels(dims_cap, fontsize=8.5)
+    ax.set_ylabel("Normalised weight")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
+    style_axes(ax, grid_axis="y")
+    ax.legend(
+        fontsize=8,
+        loc="upper right",
+        frameon=True,
+        facecolor="#fff",
+        edgecolor=COLORS["band"],
+    )
+    ax.set_title(
+        "C   Learned Weights",
+        loc="left",
+        fontsize=10.5,
+        fontweight="semibold",
+    )
+
+    # ── Panel D: Spearman ranking correlation ──
+    ax = fig.add_subplot(gs[1, 1])
+    spearman_vals = [
+        float(df.loc[s, "spearman_human_vs_scheme_elo"])
+        if pd.notna(df.loc[s, "spearman_human_vs_scheme_elo"])
+        else 0
+        for s in schemes
+    ]
+    bars = ax.bar(
+        range(len(schemes)),
+        spearman_vals,
+        0.55,
+        color=colors,
+        edgecolor="#fff",
+        lw=1,
+        zorder=3,
+    )
+    for bar, val in zip(bars, spearman_vals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.008,
+            f"{val:.3f}",
+            ha="center", va="bottom", fontsize=9, fontweight="semibold",
+        )
+    ax.set_xticks(range(len(schemes)))
+    ax.set_xticklabels(short, fontsize=8.5)
+    ax.set_ylabel("Spearman ρ")
+    ax.set_ylim(0, 1.05)
+    style_axes(ax, grid_axis="y")
+    ax.set_title(
+        "D   Ranking Correlation ↑",
+        loc="left",
+        fontsize=10.5,
+        fontweight="semibold",
+    )
+
+    n = int(df["n_samples"].iloc[0])
+    add_figure_caption(fig, left="", right=f"n = {n:,} pairwise comparisons")
     save_figure(fig, path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Cross-validated BT reconstruction
+# ═══════════════════════════════════════════════════════════════════
+
+
+def cv_reconstruct_global(
+    df: pd.DataFrame,
+    dimension_names: list[str],
+    *,
+    n_folds: int = 5,
+    regularization: float = 0.01,
+    tie_band: float = 0.05,
+    seed: int = 42,
+) -> tuple[pd.Series, pd.Series]:
+    """K-fold cross-validated BT global reconstruction.
+
+    For each fold: fit BT weights on the training split, predict
+    preferences on the held-out split.  Returns out-of-sample
+    predictions for every row.
+    """
+    prefs = pd.Series(np.nan, index=df.index, dtype=float)
+    proba_a = pd.Series(np.nan, index=df.index, dtype=float)
+
+    valid_mask = df["human_pref"].notna()
+    valid_idx = df.index[valid_mask].to_numpy()
+
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    for fold, (train_pos, test_pos) in enumerate(kf.split(valid_idx)):
+        train_idx = valid_idx[train_pos]
+        test_idx = valid_idx[test_pos]
+
+        fit = fit_bt_weights(
+            df.loc[train_idx].copy(),
+            "human_pref",
+            dimension_names=dimension_names,
+            regularization=regularization,
+        )
+        fold_prefs, fold_proba = reconstruct_preferences_from_bt_model(
+            df.loc[test_idx],
+            fit["model"],
+            dimension_names=dimension_names,
+            tie_band=tie_band,
+        )
+        prefs.loc[test_idx] = fold_prefs
+        proba_a.loc[test_idx] = fold_proba
+
+    return prefs, proba_a
+
+
+def cv_reconstruct_by_group(
+    df: pd.DataFrame,
+    group_col: str,
+    dimension_names: list[str],
+    *,
+    n_folds: int = 5,
+    min_group_samples: int = 100,
+    regularization: float = 0.01,
+    tie_band: float = 0.05,
+    seed: int = 42,
+) -> tuple[pd.Series, pd.Series]:
+    """K-fold cross-validated BT per-group reconstruction.
+
+    Within each fold's training split, fits a separate BT model per
+    group (language).  Groups too small in the training split fall back
+    to the global BT model fitted on that fold's training data.
+    """
+    prefs = pd.Series(np.nan, index=df.index, dtype=float)
+    proba_a = pd.Series(np.nan, index=df.index, dtype=float)
+
+    valid_mask = df["human_pref"].notna()
+    valid_idx = df.index[valid_mask].to_numpy()
+
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    for fold, (train_pos, test_pos) in enumerate(kf.split(valid_idx)):
+        train_idx = valid_idx[train_pos]
+        test_idx = valid_idx[test_pos]
+        train_df = df.loc[train_idx]
+
+        # Global fallback for this fold
+        fold_global = fit_bt_weights(
+            train_df.copy(),
+            "human_pref",
+            dimension_names=dimension_names,
+            regularization=regularization,
+        )
+
+        # Per-group fits on this fold's training data
+        fold_group_fits = collect_group_bt_fits(
+            train_df,
+            group_col,
+            "human_pref",
+            min_samples=min_group_samples,
+            dimension_names=dimension_names,
+            regularization=regularization,
+        )
+
+        fold_prefs, fold_proba = reconstruct_preferences_from_bt_model_by_group(
+            df.loc[test_idx],
+            group_col,
+            fold_group_fits,
+            dimension_names=dimension_names,
+            fallback_fit=fold_global,
+            tie_band=tie_band,
+        )
+        prefs.loc[test_idx] = fold_prefs
+        proba_a.loc[test_idx] = fold_proba
+
+    return prefs, proba_a
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CLI
+# ═══════════════════════════════════════════════════════════════════
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    p = argparse.ArgumentParser(
         description=(
-            "Use human-fitted Bradley-Terry models to reconstruct preferences from "
-            "saved rubric score deltas."
-        )
+            "Fit human-calibrated BT weights on rubric score deltas and "
+            "compare the resulting preference scheme against the raw judge."
+        ),
     )
-    parser.add_argument(
+    p.add_argument(
         "--output_dir",
         required=True,
-        help="Agreement run directory containing agreement_annotations.json.",
+        help="Directory with agreement_annotations.json.",
     )
-    parser.add_argument(
-        "--artifact",
-        default="agreement_annotations.json",
-        help="Annotation artifact filename inside --output_dir.",
-    )
-    parser.add_argument(
+    p.add_argument("--artifact", default="agreement_annotations.json")
+    p.add_argument(
         "--group_col",
         default="meta_lang",
-        help="Flattened metadata column for per-group BT fits.",
+        help="Metadata column for per-group BT fits.",
     )
-    parser.add_argument(
-        "--min_group_samples",
+    p.add_argument("--min_group_samples", type=int, default=100)
+    p.add_argument("--regularization", type=float, default=0.01)
+    p.add_argument("--elo_k", type=float, default=32.0)
+    p.add_argument("--tie_band", type=float, default=0.05)
+    p.add_argument("--top_models", type=int, default=15)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--n_folds",
         type=int,
-        default=100,
-        help="Minimum samples per group for per-group BT fits.",
+        default=5,
+        help="Number of cross-validation folds (0 = no CV, in-sample).",
     )
-    parser.add_argument(
-        "--regularization",
-        type=float,
-        default=0.01,
-        help="L2 regularization for BT fitting.",
-    )
-    parser.add_argument(
-        "--elo_k",
-        type=float,
-        default=32.0,
-        help="Elo K-factor for scheme comparison.",
-    )
-    parser.add_argument(
-        "--tie_band",
-        type=float,
-        default=0.05,
-        help="Tie band around 0.5 when converting BT probabilities to A/tie/B labels.",
-    )
-    parser.add_argument(
-        "--top_models",
-        type=int,
-        default=15,
-        help="Maximum number of models to show in the scheme heatmap.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Seed for Elo shuffling.",
-    )
-    parser.add_argument(
+    p.add_argument(
         "--max_samples",
         type=int,
         default=None,
-        help="Optional row cap for faster plot iteration.",
+        help="Optional row cap for faster iteration.",
     )
-    return parser.parse_args()
+    return p.parse_args()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Main
+# ═══════════════════════════════════════════════════════════════════
 
 
 def main() -> None:
@@ -481,8 +788,11 @@ def main() -> None:
 
     dimension_names = infer_score_dimensions(df)
     if not dimension_names:
-        raise SystemExit("No rubric score dimensions found in the annotation artifact.")
+        raise SystemExit(
+            "No rubric score dimensions found in the annotation artifact."
+        )
 
+    # ── Fit BT models ──────────────────────────────────────────────
     human_bt_global = fit_bt_weights(
         df[df["human_pref"].notna()].copy(),
         "human_pref",
@@ -498,12 +808,27 @@ def main() -> None:
         regularization=args.regularization,
     )
 
-    global_prefs, global_proba = reconstruct_preferences_from_bt_model(
-        df,
-        human_bt_global["model"],
-        dimension_names=dimension_names,
-        tie_band=args.tie_band,
-    )
+    # ── Reconstruct preferences (cross-validated or in-sample) ─────
+    use_cv = args.n_folds >= 2
+    cv_tag = f" ({args.n_folds}-fold CV)" if use_cv else " (in-sample)"
+    print(f"Reconstruction mode: {cv_tag.strip()}")
+
+    if use_cv:
+        global_prefs, global_proba = cv_reconstruct_global(
+            df,
+            dimension_names,
+            n_folds=args.n_folds,
+            regularization=args.regularization,
+            tie_band=args.tie_band,
+            seed=args.seed,
+        )
+    else:
+        global_prefs, global_proba = reconstruct_preferences_from_bt_model(
+            df,
+            human_bt_global["model"],
+            dimension_names=dimension_names,
+            tie_band=args.tie_band,
+        )
 
     scheme_prefs = {
         "Observed judge decision": df["judge_pref"],
@@ -514,17 +839,30 @@ def main() -> None:
     }
 
     if human_bt_by_group:
-        group_prefs, group_proba = reconstruct_preferences_from_bt_model_by_group(
-            df,
-            args.group_col,
-            human_bt_by_group,
-            dimension_names=dimension_names,
-            fallback_fit=human_bt_global,
-            tie_band=args.tie_band,
-        )
+        if use_cv:
+            group_prefs, group_proba = cv_reconstruct_by_group(
+                df,
+                args.group_col,
+                dimension_names,
+                n_folds=args.n_folds,
+                min_group_samples=args.min_group_samples,
+                regularization=args.regularization,
+                tie_band=args.tie_band,
+                seed=args.seed,
+            )
+        else:
+            group_prefs, group_proba = reconstruct_preferences_from_bt_model_by_group(
+                df,
+                args.group_col,
+                human_bt_by_group,
+                dimension_names=dimension_names,
+                fallback_fit=human_bt_global,
+                tie_band=args.tie_band,
+            )
         scheme_prefs["Human-calibrated BT (language-specific)"] = group_prefs
         scheme_proba["Human-calibrated BT (language-specific)"] = group_proba
 
+    # ── Compute scheme summary ─────────────────────────────────────
     scheme_summary, scheme_model_gaps = summarize_preference_schemes(
         df,
         scheme_prefs,
@@ -532,6 +870,7 @@ def main() -> None:
         elo_seed=args.seed,
     )
 
+    # ── Build reconstruction table ─────────────────────────────────
     reconstruction_table = pd.DataFrame(
         {
             "instruction_id": df.get("instruction_id"),
@@ -544,58 +883,94 @@ def main() -> None:
                 if args.group_col in df.columns
                 else pd.Series(np.nan, index=df.index)
             ),
-            "human_calibrated_bt_global_pref": global_prefs,
-            "human_calibrated_bt_global_proba_a": global_proba,
+            "bt_global_pref": global_prefs,
+            "bt_global_proba_a": global_proba,
         }
     )
     if "Human-calibrated BT (language-specific)" in scheme_prefs:
-        reconstruction_table[
-            "human_calibrated_bt_language_specific_pref"
-        ] = scheme_prefs["Human-calibrated BT (language-specific)"]
-        reconstruction_table[
-            "human_calibrated_bt_language_specific_proba_a"
-        ] = scheme_proba["Human-calibrated BT (language-specific)"]
+        reconstruction_table["bt_lang_pref"] = scheme_prefs[
+            "Human-calibrated BT (language-specific)"
+        ]
+        reconstruction_table["bt_lang_proba_a"] = scheme_proba[
+            "Human-calibrated BT (language-specific)"
+        ]
 
+    # ── Save CSV outputs ───────────────────────────────────────────
     scheme_summary_path = output_dir / "agreement_bt_human_model_scheme_summary.csv"
     scheme_model_path = output_dir / "agreement_bt_human_model_scheme_gaps.csv"
     reconstruction_path = output_dir / "agreement_bt_human_model_reconstruction.csv"
-    summary_plot_path = plots_dir / "agreement_bt_human_model_scheme_summary.png"
-    metric_plot_path = plots_dir / "agreement_bt_human_model_scheme_metrics.png"
-    elo_gap_render_path = plots_dir / "agreement_bt_human_model_elo_gap_render.png"
-    heatmap_path = plots_dir / "agreement_bt_human_model_scheme_heatmap.png"
-    probability_plot_path = plots_dir / "agreement_bt_human_model_probability_summary.png"
-    summary_json_path = output_dir / "agreement_bt_human_model_reconstruction_summary.json"
+    global_weights_path = output_dir / "agreement_bt_human_model_global_weights.csv"
+    group_weights_path = output_dir / "agreement_bt_human_model_group_weights.csv"
 
     scheme_summary.to_csv(scheme_summary_path, index=False)
     scheme_model_gaps.to_csv(scheme_model_path, index=False)
     reconstruction_table.to_csv(reconstruction_path, index=False)
 
-    save_scheme_summary_plot(scheme_summary, summary_plot_path)
-    save_scheme_metric_plot(scheme_summary, metric_plot_path)
-    save_elo_gap_render_plot(scheme_summary, elo_gap_render_path)
-    save_scheme_model_heatmap(
+    # Save learned weights
+    k = len(dimension_names)
+    gw = normalized_weight_dict(human_bt_global["weights"])
+    pd.DataFrame(
+        [
+            {
+                "scope": "global",
+                "dimension": d,
+                "raw_weight": float(human_bt_global["weights"].get(d, 0)),
+                "norm_weight": float(gw.get(d, 0)),
+                "uniform_weight": 1.0 / k,
+            }
+            for d in dimension_names
+        ]
+    ).to_csv(global_weights_path, index=False)
+
+    group_weight_rows = []
+    for grp, fit in human_bt_by_group.items():
+        nw = normalized_weight_dict(fit["weights"])
+        for d in dimension_names:
+            group_weight_rows.append(
+                {
+                    "group": grp,
+                    "dimension": d,
+                    "raw_weight": float(fit["weights"].get(d, 0)),
+                    "norm_weight": float(nw.get(d, 0)),
+                }
+            )
+    if group_weight_rows:
+        pd.DataFrame(group_weight_rows).to_csv(group_weights_path, index=False)
+
+    # ── Generate plots ─────────────────────────────────────────────
+    print("Generating plots …")
+
+    save_weight_profile_plot(
+        dimension_names,
+        human_bt_global["weights"],
+        human_bt_by_group,
+        plots_dir / "agreement_bt_human_model_weight_profile.pdf",
+    )
+    save_alignment_uplift_plot(
+        scheme_summary,
+        plots_dir / "agreement_bt_human_model_alignment_uplift.pdf",
+    )
+    save_elo_scatter_plot(
+        scheme_model_gaps,
+        plots_dir / "agreement_bt_human_model_elo_scatter.pdf",
+    )
+    save_model_heatmap(
         scheme_summary,
         scheme_model_gaps,
-        heatmap_path,
+        plots_dir / "agreement_bt_human_model_scheme_heatmap.pdf",
         top_models=args.top_models,
     )
-    probability_scheme_cols = ["Human-calibrated BT (global)"]
-    if "Human-calibrated BT (language-specific)" in scheme_prefs:
-        probability_scheme_cols.append("Human-calibrated BT (language-specific)")
-    prob_plot_df = reconstruction_table.rename(
-        columns={
-            "human_calibrated_bt_global_pref": "Human-calibrated BT (global)_pref",
-            "human_calibrated_bt_global_proba_a": "Human-calibrated BT (global)_proba_a",
-            "human_calibrated_bt_language_specific_pref": (
-                "Human-calibrated BT (language-specific)_pref"
-            ),
-            "human_calibrated_bt_language_specific_proba_a": (
-                "Human-calibrated BT (language-specific)_proba_a"
-            ),
-        }
+    save_dashboard_plot(
+        scheme_summary,
+        dimension_names,
+        human_bt_global["weights"],
+        plots_dir / "agreement_bt_human_model_dashboard.pdf",
     )
-    save_probability_summary_plot(prob_plot_df, probability_plot_path, probability_scheme_cols)
 
+    # ── JSON summary ───────────────────────────────────────────────
+    summary_json_path = (
+        output_dir / "agreement_bt_human_model_reconstruction_summary.json"
+    )
     summary = {
         "artifact": str((output_dir / args.artifact).resolve()),
         "dataset": meta["dataset"],
@@ -604,25 +979,68 @@ def main() -> None:
         "plots_dir": str(plots_dir),
         "n_pair_rows": int(len(df)),
         "n_dimensions": int(len(dimension_names)),
+        "dimension_names": dimension_names,
         "n_groups_with_human_bt_model": int(len(human_bt_by_group)),
+        "global_bt_training_accuracy": (
+            float(human_bt_global["training_accuracy"])
+            if pd.notna(human_bt_global["training_accuracy"])
+            else None
+        ),
+        "global_bt_weights_normalized": {
+            d: round(v, 4) for d, v in gw.items()
+        },
+        "uniform_weight": round(1.0 / k, 4),
         "tie_band": float(args.tie_band),
         "regularization": float(args.regularization),
-        "best_scheme_by_gap": str(scheme_summary.iloc[0]["scheme"]),
-        "best_scheme_gap": float(scheme_summary.iloc[0]["mean_abs_centered_gap"]),
-        "best_scheme_accuracy": float(scheme_summary.iloc[0]["accuracy_vs_human"]),
+        "n_folds": args.n_folds,
+        "evaluation_mode": "cross-validated" if use_cv else "in-sample",
+        "schemes": {},
     }
+    for _, row in scheme_summary.iterrows():
+        summary["schemes"][row["scheme"]] = {
+            "accuracy_vs_human": round(float(row["accuracy_vs_human"]), 4),
+            "decisive_accuracy": (
+                round(float(row["decisive_accuracy_vs_human"]), 4)
+                if pd.notna(row["decisive_accuracy_vs_human"])
+                else None
+            ),
+            "mean_elo_gap": round(float(row["mean_abs_centered_gap"]), 2),
+            "max_elo_gap": round(float(row["max_abs_centered_gap"]), 2),
+            "tie_rate": round(float(row["scheme_tie_rate"]), 4),
+            "spearman": round(float(row["spearman_human_vs_scheme_elo"]), 4),
+        }
     write_json(summary_json_path, summary)
 
-    print(scheme_summary.to_string(index=False))
-    print(f"Saved: {scheme_summary_path}")
-    print(f"Saved: {scheme_model_path}")
-    print(f"Saved: {reconstruction_path}")
-    print(f"Saved: {summary_plot_path}")
-    print(f"Saved: {metric_plot_path}")
-    print(f"Saved: {elo_gap_render_path}")
-    print(f"Saved: {heatmap_path}")
-    print(f"Saved: {probability_plot_path}")
-    print(f"Saved: {summary_json_path}")
+    # ── Print summary ──────────────────────────────────────────────
+    print()
+    print(
+        scheme_summary[
+            [
+                "scheme",
+                "accuracy_vs_human",
+                "decisive_accuracy_vs_human",
+                "mean_abs_centered_gap",
+                "scheme_tie_rate",
+                "spearman_human_vs_scheme_elo",
+            ]
+        ].to_string(index=False)
+    )
+    print()
+    print("Weights (global BT vs uniform):")
+    for d in dimension_names:
+        print(f"  {d:>14s}:  BT = {gw[d]:5.1%}   uniform = {1 / k:5.1%}")
+    print()
+    for p in sorted(plots_dir.glob("*.pdf")):
+        print(f"  📊 {p}")
+    for p in [
+        scheme_summary_path,
+        scheme_model_path,
+        reconstruction_path,
+        global_weights_path,
+        summary_json_path,
+    ]:
+        if p.exists():
+            print(f"  📄 {p}")
 
 
 if __name__ == "__main__":

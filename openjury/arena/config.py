@@ -147,7 +147,7 @@ class JudgeConfig:
     quantization: str | None = None
     chat_template: str | None = None
     chat_template_file: str | None = None
-    pairwise_prompt_style: str = "rubric"
+    pairwise_prompt_style: str = "criteria"
     provide_explanation: bool = False
     no_swap: bool = False           # disable swap debiasing in pairwise mode
     enable_thinking: bool | None = None  # for Qwen3 thinking mode
@@ -172,6 +172,9 @@ class JudgeConfig:
                 "generation_kwargs",
             }
             kw = {k: v for k, v in raw.items() if k in known}
+            # Normalize legacy "rubric" value → "criteria"
+            if kw.get("pairwise_prompt_style") == "rubric":
+                kw["pairwise_prompt_style"] = "criteria"
             return cls(**kw)
         raise TypeError(f"Expected str or dict for judge config, got {type(raw)}")
 
@@ -264,7 +267,7 @@ class ArenaConfig:
           gpus: 2
           mode: samplewise
 
-        rubric: default
+        criteria: default
         matchmaker:
           strategy: round_robin
 
@@ -294,8 +297,8 @@ class ArenaConfig:
     seed: int = 42
     balance_by: str | None = None
 
-    # ── Rubric ───────────────────────────────────────────────────
-    rubric: str = "default"        # name or path to JSON rubric file
+    # ── Criteria ─────────────────────────────────────────────────
+    criteria: str = "default"       # name or path to JSON criteria file
 
     # ── Matchmaker ───────────────────────────────────────────────
     matchmaker: MatchmakerConfig = field(default_factory=MatchmakerConfig)
@@ -395,7 +398,7 @@ class ArenaConfig:
             language=data.get("language"),
             seed=data.get("seed", 42),
             balance_by=data.get("balance_by"),
-            rubric=data.get("rubric", "default"),
+            criteria=data.get("criteria", data.get("rubric", "default")),
             matchmaker=matchmaker,
             generation_max_tokens=generation_max_tokens,
             truncate_input_chars=truncate_input_chars,
@@ -464,7 +467,7 @@ class ArenaConfig:
             judge_out["chat_template"] = self.judge.chat_template
         if self.judge.chat_template_file is not None:
             judge_out["chat_template_file"] = self.judge.chat_template_file
-        if self.judge.pairwise_prompt_style != "rubric":
+        if self.judge.pairwise_prompt_style != "criteria":
             judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
         if self.judge.provide_explanation:
             judge_out["provide_explanation"] = self.judge.provide_explanation
@@ -481,7 +484,7 @@ class ArenaConfig:
             "balance_by": self.balance_by,
             "models": models_out,
             "judge": judge_out,
-            "rubric": self.rubric,
+            "criteria": self.criteria,
             "matchmaker": {
                 "strategy": self.matchmaker.strategy,
                 "n_matches": self.matchmaker.n_matches,
@@ -534,7 +537,7 @@ class AgreementConfig:
                 "temperature": 0.0,
                 "enable_thinking": false
             },
-            "rubric": "default",
+            "criteria": "default",
             "output_dir": "results/agreement/lmsys_deepseek3",
             "language": null,
             "seed": 42
@@ -552,8 +555,8 @@ class AgreementConfig:
     seed: int = 42
     balance_by: str | None = None
 
-    # ── Rubric ───────────────────────────────────────────────────
-    rubric: str = "default"
+    # ── Criteria ─────────────────────────────────────────────────────
+    criteria: str = "default"
 
     # ── Scoring ──────────────────────────────────────────────────
     ignore_score_cache: bool = False
@@ -612,7 +615,7 @@ class AgreementConfig:
             language=data.get("language"),
             seed=data.get("seed", 42),
             balance_by=data.get("balance_by"),
-            rubric=data.get("rubric", "default"),
+            criteria=data.get("criteria", data.get("rubric", "default")),
             ignore_score_cache=ignore_score_cache,
             truncate_instruction=data.get("truncate_instruction", 500),
         )
@@ -633,7 +636,7 @@ class AgreementConfig:
             judge_out["chat_template"] = self.judge.chat_template
         if self.judge.chat_template_file is not None:
             judge_out["chat_template_file"] = self.judge.chat_template_file
-        if self.judge.pairwise_prompt_style != "rubric":
+        if self.judge.pairwise_prompt_style != "criteria":
             judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
         if self.judge.generation_kwargs:
             judge_out["generation_kwargs"] = self.judge.generation_kwargs
@@ -646,7 +649,7 @@ class AgreementConfig:
             "dataset": self.dataset,
             "n_instructions": self.n_instructions,
             "judge": judge_out,
-            "rubric": self.rubric,
+            "criteria": self.criteria,
             "generation": {
                 "ignore_score_cache": self.ignore_score_cache,
             },
@@ -684,7 +687,7 @@ class Match:
 
 @dataclass
 class ModelScore:
-    """Samplewise rubric scores for one model on one instruction.
+    """Samplewise criteria scores for one model on one instruction.
 
     Produced when the judge scores each model's completion independently.
     """
@@ -763,8 +766,8 @@ class ArenaResult:
     judge_model: str
     judge_mode: str  # "samplewise" or "pairwise"
     matchmaker_strategy: str
-    rubric_name: str
-    rubric_definition: dict[str, Any]
+    criteria_name: str
+    criteria_definition: dict[str, Any]
     n_instructions: int
 
     # ── Per-instruction metadata (aligned with instruction indices) ──

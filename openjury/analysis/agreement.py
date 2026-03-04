@@ -28,7 +28,7 @@ def analyze_agreement_annotations(
         dataset=meta["dataset"],
         judge_model=meta["judge_model"],
         judge_mode=meta["judge_mode"],
-        rubric=meta["rubric"],
+        criteria=meta.get("criteria", meta.get("rubric", "default")),
         swap_debiasing=meta["swap_debiasing"],
         language=meta.get("language"),
     )

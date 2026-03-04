@@ -50,7 +50,7 @@ def _apply_arena_cli_overrides(
             ("language", lambda c, v: setattr(c, "language", v)),
             ("seed", lambda c, v: setattr(c, "seed", v)),
             ("balance_by", lambda c, v: setattr(c, "balance_by", v)),
-            ("rubric", lambda c, v: setattr(c, "rubric", v)),
+            ("criteria", lambda c, v: setattr(c, "criteria", v)),
             ("generation_max_tokens", lambda c, v: setattr(c, "generation_max_tokens", v)),
             ("truncate_input_chars", lambda c, v: setattr(c, "truncate_input_chars", v)),
             ("judge_model", lambda c, v: setattr(c.judge, "model", v)),
@@ -131,7 +131,7 @@ def resolve_arena_cli(
             language=args.language,
             seed=args.seed,
             balance_by=args.balance_by,
-            rubric=args.rubric,
+            criteria=args.criteria,
             matchmaker=MatchmakerConfig(
                 strategy=args.matchmaker,
                 n_matches=args.n_matches,

@@ -1,11 +1,11 @@
 """Unified judge-score cache for OpenJury arena.
 
-Stores per-model samplewise rubric scores as **parquet** files under a
+Stores per-model samplewise criteria scores as **parquet** files under a
 deterministic path::
 
-    $OPENJURY_DATA/scores/{judge_key}/{rubric}/{dataset}/{model_key}/{n_key}.parquet
+    $OPENJURY_DATA/scores/{judge_key}/{criteria}/{dataset}/{model_key}/{n_key}.parquet
 
-Cache key = ``(judge_model, rubric_name, model, dataset, n_instructions)``.
+Cache key = ``(judge_model, criteria_name, model, dataset, n_instructions)``.
 
 The design mirrors :mod:`openjury.cache.completions` — filesystem-based,
 human-inspectable, and subsettable (``all.parquet`` can serve any ``nK``
@@ -17,19 +17,19 @@ Quick start::
 
     # Look up
     scores = score_cache.get(
-        judge="VLLM/Qwen/Qwen3-32B", rubric="default",
+        judge="VLLM/Qwen/Qwen3-32B", criteria="default",
         model="VLLM/Qwen/Qwen2.5-0.5B-Instruct", dataset="alpaca-eval", n=100,
     )
 
     # Store
     score_cache.put(
-        model_scores, judge="VLLM/Qwen/Qwen3-32B", rubric="default",
+        model_scores, judge="VLLM/Qwen/Qwen3-32B", criteria="default",
         model="VLLM/Qwen/Qwen2.5-0.5B-Instruct", dataset="alpaca-eval", n=100,
     )
 
     # Get or score (lazy — only scores on cache miss)
     scores = score_cache.get_or_score(
-        judge="VLLM/Qwen/Qwen3-32B", rubric="default",
+        judge="VLLM/Qwen/Qwen3-32B", criteria="default",
         model="VLLM/Qwen/Qwen2.5-0.5B-Instruct", dataset="alpaca-eval", n=100,
         score_fn=lambda: arena_judge.score_model(...),
     )
@@ -38,7 +38,7 @@ CLI::
 
     uv run python -m openjury.cache.scores list
     uv run python -m openjury.cache.scores list --dataset alpaca-eval
-    uv run python -m openjury.cache.scores clear --judge VLLM/Qwen/Qwen3-32B --rubric default
+    uv run python -m openjury.cache.scores clear --judge VLLM/Qwen/Qwen3-32B --criteria default
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ class ScoreCacheEntry:
     """Metadata for a single cached score file."""
 
     judge: str
-    rubric: str
+    criteria: str
     model: str
     dataset: str
     n: int | None
@@ -127,7 +127,7 @@ class ScoreCacheEntry:
     def __str__(self) -> str:
         n_str = str(self.n) if self.n is not None else "all"
         return (
-            f"{self.judge} | {self.rubric} | "
+            f"{self.judge} | {self.criteria} | "
             f"{self.dataset}/{self.model} (n={n_str}, {self.size_mb:.1f}MB)"
         )
 
@@ -142,13 +142,13 @@ class ScoreCache:
 
     Directory layout::
 
-        {root}/scores/{judge_key}/{rubric}/{dataset}/{model_key}/{n_key}.parquet
+        {root}/scores/{judge_key}/{criteria}/{dataset}/{model_key}/{n_key}.parquet
 
     Parameters:
         root: Base data directory.  Defaults to ``$OPENJURY_DATA``
               (typically ``~/openjury-eval-data``).
 
-    Lookup strategy for ``get(judge, rubric, model, dataset, n=K)``:
+    Lookup strategy for ``get(judge, criteria, model, dataset, n=K)``:
         1. Exact match ``nK.parquet`` → return it.
         2. Fall back to ``all.parquet`` (superset) → load and return first K rows.
     """
@@ -161,7 +161,7 @@ class ScoreCache:
     def _path(
         self,
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None,
@@ -169,7 +169,7 @@ class ScoreCache:
         return (
             self.root
             / _fs_key(judge)
-            / rubric
+            / criteria
             / dataset
             / _fs_key(model)
             / f"{_n_key(n)}.parquet"
@@ -180,7 +180,7 @@ class ScoreCache:
     def get(
         self,
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None = None,
@@ -191,7 +191,7 @@ class ScoreCache:
         is cached.
         """
         # 1. Exact match
-        exact = self._path(judge, rubric, model, dataset, n)
+        exact = self._path(judge, criteria, model, dataset, n)
         if exact.exists():
             logger.info("Score cache hit: %s", exact)
             df = pd.read_parquet(exact)
@@ -199,7 +199,7 @@ class ScoreCache:
 
         # 2. Superset: "all" cache can serve any smaller n
         if n is not None:
-            all_path = self._path(judge, rubric, model, dataset, None)
+            all_path = self._path(judge, criteria, model, dataset, None)
             if all_path.exists():
                 logger.info("Score cache hit (subsetting from 'all'): %s", all_path)
                 df = pd.read_parquet(all_path)
@@ -212,14 +212,14 @@ class ScoreCache:
         self,
         model_scores: list[ModelScore],
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None = None,
     ) -> Path:
         """Store scores in cache.  Returns the written path."""
         df = _scores_to_df(model_scores)
-        path = self._path(judge, rubric, model, dataset, n)
+        path = self._path(judge, criteria, model, dataset, n)
         path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(path, index=False)
         logger.info("Cached %d scores → %s", len(model_scores), path)
@@ -228,7 +228,7 @@ class ScoreCache:
     def get_or_score(
         self,
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None,
@@ -239,7 +239,7 @@ class ScoreCache:
 
         Args:
             judge: Judge model specification string.
-            rubric: Rubric name.
+            criteria: Criteria name.
             model: Candidate model being scored.
             dataset: Dataset name.
             n: Number of instructions (``None`` = all).
@@ -250,16 +250,16 @@ class ScoreCache:
             List of :class:`ModelScore`.
         """
         if not ignore_cache:
-            cached = self.get(judge, rubric, model, dataset, n)
+            cached = self.get(judge, criteria, model, dataset, n)
             if cached is not None:
                 return cached
 
         logger.info(
-            "Scoring model: judge=%s rubric=%s model=%s dataset=%s n=%s",
-            judge, rubric, model, dataset, n,
+            "Scoring model: judge=%s criteria=%s model=%s dataset=%s n=%s",
+            judge, criteria, model, dataset, n,
         )
         scores = score_fn()
-        self.put(scores, judge, rubric, model, dataset, n)
+        self.put(scores, judge, criteria, model, dataset, n)
         return scores
 
     # ── Query helpers ────────────────────────────────────────────
@@ -267,32 +267,32 @@ class ScoreCache:
     def exists(
         self,
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None = None,
     ) -> bool:
         """Check whether scores are cached (exact or superset)."""
-        if self._path(judge, rubric, model, dataset, n).exists():
+        if self._path(judge, criteria, model, dataset, n).exists():
             return True
-        if n is not None and self._path(judge, rubric, model, dataset, None).exists():
+        if n is not None and self._path(judge, criteria, model, dataset, None).exists():
             return True
         return False
 
     def resolve(
         self,
         judge: str,
-        rubric: str,
+        criteria: str,
         model: str,
         dataset: str,
         n: int | None = None,
     ) -> Path | None:
         """Return the cache *file* path that would serve this request, or ``None``."""
-        exact = self._path(judge, rubric, model, dataset, n)
+        exact = self._path(judge, criteria, model, dataset, n)
         if exact.exists():
             return exact
         if n is not None:
-            all_path = self._path(judge, rubric, model, dataset, None)
+            all_path = self._path(judge, criteria, model, dataset, None)
             if all_path.exists():
                 return all_path
         return None
@@ -302,7 +302,7 @@ class ScoreCache:
     def list(
         self,
         judge: str | None = None,
-        rubric: str | None = None,
+        criteria: str | None = None,
         dataset: str | None = None,
     ) -> list[ScoreCacheEntry]:
         """List all cached scores, optionally filtered."""
@@ -318,16 +318,16 @@ class ScoreCache:
                 continue
             judge_name = j_dir.name.replace("__", "/")
 
-            rubric_dirs = (
-                [j_dir / rubric] if rubric else sorted(j_dir.iterdir())
+            criteria_dirs = (
+                [j_dir / criteria] if criteria else sorted(j_dir.iterdir())
             )
-            for r_dir in rubric_dirs:
-                if not r_dir.is_dir():
+            for c_dir in criteria_dirs:
+                if not c_dir.is_dir():
                     continue
-                rubric_name = r_dir.name
+                criteria_name = c_dir.name
 
                 ds_dirs = (
-                    [r_dir / dataset] if dataset else sorted(r_dir.iterdir())
+                    [c_dir / dataset] if dataset else sorted(c_dir.iterdir())
                 )
                 for ds_dir in ds_dirs:
                     if not ds_dir.is_dir():
@@ -345,7 +345,7 @@ class ScoreCache:
                             size_mb = parquet.stat().st_size / (1024 * 1024)
                             entries.append(ScoreCacheEntry(
                                 judge=judge_name,
-                                rubric=rubric_name,
+                                criteria=criteria_name,
                                 model=model_name,
                                 dataset=ds_name,
                                 n=n,
@@ -359,7 +359,7 @@ class ScoreCache:
     def clear(
         self,
         judge: str | None = None,
-        rubric: str | None = None,
+        criteria: str | None = None,
         model: str | None = None,
         dataset: str | None = None,
     ) -> int:
@@ -367,13 +367,13 @@ class ScoreCache:
 
         - ``clear()`` — remove everything
         - ``clear(judge="...")`` — remove all for a judge
-        - ``clear(judge="...", rubric="default", model="...", dataset="...")``
+        - ``clear(judge="...", criteria="default", model="...", dataset="...")``
           — remove specific
         """
         removed = 0
-        if judge and rubric and model and dataset:
+        if judge and criteria and model and dataset:
             model_dir = (
-                self.root / _fs_key(judge) / rubric / dataset / _fs_key(model)
+                self.root / _fs_key(judge) / criteria / dataset / _fs_key(model)
             )
             if model_dir.exists():
                 for f in model_dir.glob("*.parquet"):
@@ -383,7 +383,7 @@ class ScoreCache:
                     model_dir.rmdir()
         else:
             # Broader sweep — use listing to find matching entries
-            for entry in self.list(judge=judge, rubric=rubric, dataset=dataset):
+            for entry in self.list(judge=judge, criteria=criteria, dataset=dataset):
                 if model and entry.model != model:
                     continue
                 entry.path.unlink(missing_ok=True)
@@ -418,20 +418,20 @@ def _cli():
     # list
     ls = sub.add_parser("list", help="List cached scores")
     ls.add_argument("--judge", default=None)
-    ls.add_argument("--rubric", default=None)
+    ls.add_argument("--criteria", default=None)
     ls.add_argument("--dataset", default=None)
 
     # clear
     clr = sub.add_parser("clear", help="Remove cached scores")
     clr.add_argument("--judge", default=None)
-    clr.add_argument("--rubric", default=None)
+    clr.add_argument("--criteria", default=None)
     clr.add_argument("--model", default=None)
     clr.add_argument("--dataset", default=None)
 
     # path
     pth = sub.add_parser("path", help="Show cache path for a key")
     pth.add_argument("--judge", required=True)
-    pth.add_argument("--rubric", required=True)
+    pth.add_argument("--criteria", required=True)
     pth.add_argument("--model", required=True)
     pth.add_argument("--dataset", required=True)
     pth.add_argument("--n", type=int, default=None)
@@ -442,7 +442,7 @@ def _cli():
 
     if args.command == "list":
         entries = sc.list(
-            judge=args.judge, rubric=args.rubric, dataset=args.dataset,
+            judge=args.judge, criteria=args.criteria, dataset=args.dataset,
         )
         if not entries:
             print("(no cached scores)")
@@ -452,14 +452,14 @@ def _cli():
     elif args.command == "clear":
         n = sc.clear(
             judge=args.judge,
-            rubric=args.rubric,
+            criteria=args.criteria,
             model=args.model,
             dataset=args.dataset,
         )
         print(f"Removed {n} cached score file(s).")
 
     elif args.command == "path":
-        print(sc._path(args.judge, args.rubric, args.model, args.dataset, args.n))
+        print(sc._path(args.judge, args.criteria, args.model, args.dataset, args.n))
 
     else:
         parser.print_help()

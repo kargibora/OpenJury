@@ -4,7 +4,7 @@ Implements the augmented Bradley-Terry model from the proposal:
 
     p*(y1 ≻ y2 | x) = σ(wᵀ [Φ(x, y1) - Φ(x, y2)])
 
-where Φ(x, y) is a vector of rubric scores and w are learnable weights that
+where Φ(x, y) is a vector of criteria scores and w are learnable weights that
 reveal which quality dimensions are most predictive of preference.
 
 Quick start::

@@ -146,13 +146,13 @@ class PipelineConfig:
     dataset: str
     judge_model: str = "none"
     n_instructions: int | None = None
-    rubric: str = "default"
+    criteria: str = "default"
     generation_max_tokens: int = 4096
     judge_max_tokens: int = 2048
     truncate_input_chars: int = 8192
     provide_explanation: bool = False
     judge_mode: str = "samplewise"
-    pairwise_prompt_style: str = "rubric"
+    pairwise_prompt_style: str = "criteria"
     no_swap: bool = False  # disable position-swap debiasing
     ignore_cache: bool = False  # force regeneration even if completions are cached
     ignore_score_cache: bool = False  # force re-scoring even if judge scores are cached
@@ -319,14 +319,14 @@ class PipelineConfig:
         return cls(
             dataset=args.dataset,
             judge_model=args.judge_model,
-            rubric=getattr(args, "rubric", "default"),
+            criteria=getattr(args, "criteria", "default"),
             n_instructions=args.n_instructions,
             generation_max_tokens=args.generation_max_tokens,
             judge_max_tokens=args.judge_max_tokens,
             truncate_input_chars=args.truncate_input_chars,
             provide_explanation=args.provide_explanation,
             judge_mode=getattr(args, "judge_mode", "samplewise"),
-            pairwise_prompt_style=getattr(args, "pairwise_prompt_style", "rubric"),
+            pairwise_prompt_style=getattr(args, "pairwise_prompt_style", "criteria"),
             no_swap=getattr(args, "no_swap", False),
             ignore_cache=getattr(args, "ignore_cache", False),
             ignore_score_cache=getattr(args, "ignore_score_cache", False),

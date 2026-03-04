@@ -4,7 +4,7 @@ Implements Eq. 2 from the proposal::
 
     p*(y1 ≻ y2 | x) = σ(wᵀ [Φ(x, y1) - Φ(x, y2)])
 
-where Φ(x, y) is a vector of rubric scores and w are learnable weights.
+where Φ(x, y) is a vector of criteria scores and w are learnable weights.
 
 Uses sklearn estimators (LogisticRegression by default) for robust fitting
 with proper regularization, convergence, and feature scaling.
@@ -30,7 +30,7 @@ class FeatureBradleyTerry:
     """Bradley-Terry model with interpretable feature weights.
 
     Wraps an sklearn estimator (default: LogisticRegression) that operates
-    on standardized rubric-score differences Φ(A) - Φ(B).
+    on standardized criteria-score differences Φ(A) - Φ(B).
 
     Preference convention used by all scorers:
         0.0 = A wins, 0.5 = tie, 1.0 = B wins.
@@ -40,7 +40,7 @@ class FeatureBradleyTerry:
     being positive when A scores higher).
 
     Attributes:
-        dimension_names: Names of the rubric dimensions (features).
+        dimension_names: Names of the criteria dimensions (features).
         regularization: L2 regularization strength λ (sklearn C = 1/λ).
         estimator: Optional custom sklearn estimator.
         weights: Learned weight vector w ∈ R^k (None before fitting).
@@ -73,8 +73,8 @@ class FeatureBradleyTerry:
         """Prepare feature matrices and labels.
 
         Args:
-            scores_A: Rubric scores for model A.
-            scores_B: Rubric scores for model B.
+            scores_A: Criteria scores for model A.
+            scores_B: Criteria scores for model B.
             preferences: 0.0 = A wins, 1.0 = B wins, 0.5 = tie.
                         If None, only returns phi matrices (for prediction).
 
@@ -130,11 +130,11 @@ class FeatureBradleyTerry:
         fit_intercept: bool = True,
         verbose: bool = True,
     ) -> FeatureBradleyTerry:
-        """Fit the model on rubric score differences.
+        """Fit the model on criteria score differences.
 
         Args:
-            scores_A: Rubric scores for model A (one row per comparison).
-            scores_B: Rubric scores for model B.
+            scores_A: Criteria scores for model A (one row per comparison).
+            scores_B: Criteria scores for model B.
             preferences: 0.0 = A wins, 1.0 = B wins, 0.5 = tie.
                         Ties are removed before fitting.
             lr: *Ignored* — kept for backward compatibility.
@@ -216,8 +216,8 @@ class FeatureBradleyTerry:
         """Predict probability that A is preferred over B.
 
         Args:
-            scores_A: Rubric scores for model A.
-            scores_B: Rubric scores for model B.
+            scores_A: Criteria scores for model A.
+            scores_B: Criteria scores for model B.
 
         Returns:
             ``(n,)`` array of probabilities p(A ≻ B | x).
@@ -247,8 +247,8 @@ class FeatureBradleyTerry:
         """Predict preference: 1 = prefer A, 0 = prefer B.
 
         Args:
-            scores_A: Rubric scores for model A.
-            scores_B: Rubric scores for model B.
+            scores_A: Criteria scores for model A.
+            scores_B: Criteria scores for model B.
             threshold: Decision boundary. Default 0.5.
 
         Returns:
@@ -291,8 +291,8 @@ class FeatureBradleyTerry:
         bootstrap iterations.
 
         Args:
-            scores_A: Rubric scores for model A (one row per comparison).
-            scores_B: Rubric scores for model B.
+            scores_A: Criteria scores for model A (one row per comparison).
+            scores_B: Criteria scores for model B.
             preferences: 0.0 = A wins, 1.0 = B wins, 0.5 = tie.
             n_bootstrap: Number of bootstrap iterations.
             ci: Confidence level (default 0.95 → 95% CI).

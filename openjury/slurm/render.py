@@ -206,7 +206,7 @@ def _arena_step_script(
         echo "Arena evaluation: {len(pipeline.models)} models"
         {model_list_str}
         echo "Judge:      {pipeline.judge_model} (TP={job.n_gpus})"
-        echo "Rubric:     {pipeline.rubric}"
+        echo "Criteria:     {pipeline.criteria}"
         echo "Mode:       {pipeline.judge_mode}"
         echo "Stage:      {stage}"
         echo "Matchmaker: {pipeline.matchmaker}"
@@ -238,7 +238,7 @@ def _agreement_step_script(
         # ── Agreement Evaluation (human vs judge) ────────────────
         echo "Agreement dataset: {pipeline.dataset}"
         echo "Judge:             {pipeline.judge_model} (TP={job.n_gpus})"
-        echo "Rubric:            {pipeline.rubric}"
+        echo "Criteria:            {pipeline.criteria}"
         echo "Mode:              {pipeline.judge_mode}"
         echo "Stage:             {stage}"
         echo "Language filter:   {pipeline.language or 'all'}"

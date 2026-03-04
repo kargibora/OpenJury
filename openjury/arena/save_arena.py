@@ -14,12 +14,12 @@ Schema (v2.1)::
         "judge_model": "VLLM/Qwen/Qwen3-32B",
         "judge_mode": "samplewise",
         "matchmaker": "round_robin",
-        "rubric": "default",
+        "criteria": "default",
         "n_instructions": 100,
         "n_matches": 300,
         "date": "2026-02-16T12:00:00"
       },
-      "rubric_definition": { ... },
+      "criteria_definition": { ... },
       "model_scores": {
         "VLLM/A": [
           {"instruction_index": 0, "scores": {"fluency": 4, ...}},
@@ -90,14 +90,14 @@ def save_arena(
             "judge_model": result.judge_model,
             "judge_mode": result.judge_mode,
             "matchmaker": result.matchmaker_strategy,
-            "rubric": result.rubric_name,
+            "criteria": result.criteria_name,
             "n_instructions": result.n_instructions,
             "n_matches": result.n_matches,
             "n_models": result.n_models,
             "date": datetime.now().isoformat(),
             **result.extra_metadata,
         },
-        "rubric_definition": result.rubric_definition,
+        "criteria_definition": result.criteria_definition,
     }
 
     # ── System prompt (for reproducibility) ──────────────────────

@@ -4,7 +4,7 @@ Two modes:
 
 - **samplewise** (default, recommended for K ≥ 3):
   Score each model's completions independently (K × N judge calls), then
-  derive pairwise preferences from rubric-score differences for every
+  derive pairwise preferences from criteria-score differences for every
   sampled matchup.  Efficient: judge cost is O(K·N) regardless of how
   many pairs the matchmaker generates.
 
@@ -19,7 +19,7 @@ Usage::
 
     judge = ArenaJudge(
         judge_model=make_model("VLLM/Qwen/Qwen3-32B"),
-        rubric=get_rubric("default"),
+        criteria=get_criteria("default"),
     )
 
     # Samplewise (default): score each model, derive all pairs
@@ -45,34 +45,34 @@ from openjury.common.pair_annotation import (
     derive_preference_from_scores,
     score_pairs_pairwise,
 )
-from openjury.rubrics import RubricScorer
-from openjury.rubrics.schema import Rubric, RubricScore
+from openjury.criteria import CriteriaScorer
+from openjury.criteria.schema import Criteria, CriteriaScore
 
 
 class ArenaJudge:
-    """Orchestrate rubric scoring for K models in an arena.
+    """Orchestrate criteria scoring for K models in an arena.
 
-    Wraps :class:`RubricScorer` and adds arena-specific logic:
+    Wraps :class:`CriteriaScorer` and adds arena-specific logic:
     model-indexed completion lookup, samplewise→pairwise derivation,
     and match-result construction.
 
     Args:
         judge_model: An LLM backend with ``.invoke`` / ``.batch``.
-        rubric: The rubric to evaluate against.
+        criteria: The criteria set to evaluate against.
         provide_explanation: Ask judge for explanations (slower).
     """
 
     def __init__(
         self,
         judge_model: Any,
-        rubric: Rubric,
+        criteria: Criteria,
         provide_explanation: bool = False,
-        pairwise_prompt_style: str = "rubric",
+        pairwise_prompt_style: str = "criteria",
     ):
-        self.rubric = rubric
-        self.scorer = RubricScorer(
+        self.criteria = criteria
+        self.scorer = CriteriaScorer(
             judge_model=judge_model,
-            rubric=rubric,
+            criteria=criteria,
             provide_explanation=provide_explanation,
             pairwise_prompt_style=pairwise_prompt_style,
         )
@@ -89,9 +89,9 @@ class ArenaJudge:
         reference_answers: list[str] | None = None,
         use_tqdm: bool = False,
     ) -> list[ModelScore]:
-        """Score a single model's completions against the rubric.
+        """Score a single model's completions against the criteria.
 
-        This is the **cacheable unit**: one model, one dataset, one rubric.
+        This is the **cacheable unit**: one model, one dataset, one criteria set.
         Call this per-model and cache the results so that adding a new
         model to the arena only requires scoring the new model.
 
@@ -114,7 +114,7 @@ class ArenaJudge:
             model.rsplit("/", 1)[-1], len(model_completions),
         )
 
-        rubric_scores: list[RubricScore] = self.scorer.score(
+        criteria_scores: list[CriteriaScore] = self.scorer.score(
             instructions=instructions[:len(model_completions)],
             completions=model_completions,
             model_name=model,
@@ -123,7 +123,7 @@ class ArenaJudge:
         )
 
         model_score_list: list[ModelScore] = []
-        for rs in rubric_scores:
+        for rs in criteria_scores:
             ms = ModelScore(
                 model=model,
                 instruction_index=rs.instruction_index,
@@ -228,9 +228,9 @@ class ArenaJudge:
         instructions: list[str],
         completions: dict[str, pd.DataFrame],
     ) -> list[MatchResult]:
-        """Derive pairwise preferences from samplewise rubric scores.
+        """Derive pairwise preferences from samplewise criteria scores.
 
-        For each match, computes a weighted average of rubric scores for
+        For each match, computes a weighted average of criteria scores for
         both models and converts the difference into a preference.
 
         This method is public so that the arena pipeline can call it
@@ -247,7 +247,7 @@ class ArenaJudge:
             List of :class:`MatchResult`.
         """
         results: list[MatchResult] = []
-        weights = {d.name: d.weight for d in self.rubric.dimensions}
+        weights = {c.name: c.weight for c in self.criteria.criteria}
 
         for match in matches:
             ms_a = score_index.get(match.model_a, {}).get(match.instruction_index)

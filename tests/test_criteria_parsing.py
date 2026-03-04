@@ -5,18 +5,18 @@ import math
 import pytest
 
 from openjury.models.factory import make_model
-from openjury.rubrics import RubricDimension, RubricScorer, get_rubric
+from openjury.criteria import Criterion, CriteriaScorer, get_criteria
 
 
-def _scorer_for_overall() -> RubricScorer:
-    return RubricScorer(
+def _scorer_for_overall() -> CriteriaScorer:
+    return CriteriaScorer(
         judge_model=make_model("Dummy/test-judge"),
-        rubric=get_rubric("overall"),
+        criteria=get_criteria("overall"),
     )
 
 
-def test_rubric_dimension_normalizes_score_reference_keys_and_renders_prompt():
-    dim = RubricDimension(
+def test_criterion_normalizes_score_reference_keys_and_renders_prompt():
+    criterion = Criterion(
         name="coherence",
         description="Logical flow and structure.",
         scale_min=1,
@@ -24,22 +24,22 @@ def test_rubric_dimension_normalizes_score_reference_keys_and_renders_prompt():
         score_references={"7": "Strong coherence", "1": "Incoherent"},
     )
 
-    assert dim.score_references == {7: "Strong coherence", 1: "Incoherent"}
+    assert criterion.score_references == {7: "Strong coherence", 1: "Incoherent"}
 
-    block = dim.prompt_block()
+    block = criterion.prompt_block()
     assert "Score references:" in block
     assert "- 7: Strong coherence" in block
     assert "- 1: Incoherent" in block
 
 
-def test_default_rubric_prompt_includes_score_references():
-    rubric = get_rubric("default")
-    block = rubric.prompt_block()
+def test_default_criteria_prompt_includes_score_references():
+    criteria = get_criteria("default")
+    block = criteria.prompt_block()
     assert "Score references:" in block
     assert "Adherence" in block
 
 
-def test_parse_scores_normalizes_title_cased_dimension_names():
+def test_parse_scores_normalizes_title_cased_criterion_names():
     scorer = _scorer_for_overall()
     raw = """```json
 {"Overall": 7}
@@ -96,10 +96,10 @@ preference: B
     assert parsed["scores_B"]["overall"] == 6.0
 
 
-def test_parse_pairwise_legacy_scores_for_overall_rubric():
-    scorer = RubricScorer(
+def test_parse_pairwise_legacy_scores_for_overall_criteria():
+    scorer = CriteriaScorer(
         judge_model=make_model("Dummy/test-judge"),
-        rubric=get_rubric("overall"),
+        criteria=get_criteria("overall"),
         pairwise_prompt_style="legacy",
     )
 
@@ -115,11 +115,11 @@ score_B: 5
     assert parsed["scores_B"] == {"overall": 5.0}
 
 
-def test_legacy_pairwise_requires_single_dimension_rubric():
-    with pytest.raises(ValueError, match="single-dimension rubric"):
-        RubricScorer(
+def test_legacy_pairwise_requires_single_criterion_criteria_set():
+    with pytest.raises(ValueError, match="single-criterion"):
+        CriteriaScorer(
             judge_model=make_model("Dummy/test-judge"),
-            rubric=get_rubric("default"),
+            criteria=get_criteria("default"),
             pairwise_prompt_style="legacy",
         )
 

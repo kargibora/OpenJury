@@ -32,7 +32,7 @@ from openjury.pipelines.annotate import (
     load_agreement_annotations,
     save_agreement_annotations,
 )
-from openjury.rubrics import RubricScorer, get_rubric
+from openjury.criteria import CriteriaScorer, get_criteria
 
 
 def _pref_to_label(pref: float) -> str:
@@ -70,7 +70,7 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
 
     judge_cfg = config.judge
     dataset_name = config.dataset
-    rubric_name = config.rubric
+    criteria_name = config.criteria
     judge_mode = judge_cfg.mode
     output_dir = config.output_dir
     ignore_score_cache = config.ignore_score_cache
@@ -100,23 +100,23 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
         len(dataset),
     )
 
-    rubric = get_rubric(rubric_name)
+    criteria = get_criteria(criteria_name)
     judge_model_config = judge_cfg.to_model_config()
     model = make_model(judge_cfg.model, config=judge_model_config)
-    scorer = RubricScorer(
+    scorer = CriteriaScorer(
         judge_model=model,
-        rubric=rubric,
+        criteria=criteria,
         provide_explanation=judge_cfg.provide_explanation,
         pairwise_prompt_style=judge_cfg.pairwise_prompt_style,
     )
-    dimension_weights = {d.name: d.weight for d in rubric.dimensions}
+    dimension_weights = {c.name: c.weight for c in criteria.criteria}
 
     logger.info(
-        "Judge: %s | Mode: %s | Rubric: %s (%d dims) | Swap: %s",
+        "Judge: %s | Mode: %s | Criteria: %s (%d criteria) | Swap: %s",
         judge_cfg.model,
         judge_mode,
-        rubric_name,
-        rubric.k,
+        criteria_name,
+        criteria.num_criteria,
         "off" if judge_cfg.no_swap else "on",
     )
 
@@ -154,7 +154,7 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
             use_tqdm=True,
             cache_config=PairwiseCacheConfig(
                 judge=judge_cfg.model,
-                rubric=rubric_name,
+                criteria=criteria_name,
                 model_key=pair_key,
                 dataset_exact=cache_dataset_exact,
                 n_instructions=config.n_instructions,
@@ -171,7 +171,7 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
             use_tqdm=True,
             cache_config=SamplewiseCacheConfig(
                 judge=judge_cfg.model,
-                rubric=rubric_name,
+                criteria=criteria_name,
                 model_key_a="__agreement_samplewise_side_A",
                 model_key_b="__agreement_samplewise_side_B",
                 dataset_exact=cache_dataset_exact,
@@ -250,8 +250,8 @@ def run_agreement(config: AgreementConfig, stage: str = "all") -> dict[str, Any]
             "judge_model": judge_cfg.model,
             "judge_mode": judge_mode,
             "pairwise_prompt_style": judge_cfg.pairwise_prompt_style,
-            "rubric": rubric_name,
-            "rubric_k": rubric.k,
+            "criteria": criteria_name,
+            "criteria_k": criteria.num_criteria,
             "swap_debiasing": not judge_cfg.no_swap,
             "n_samples": n_total,
             "dataset_cache_key": cache_dataset,

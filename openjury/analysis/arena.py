@@ -21,7 +21,7 @@ def analyze_arena_annotations(
     meta = ann["metadata"]
     model_names = list(meta["models"])
     match_results: list[MatchResult] = ann["matches"]
-    dimension_names = ann.get("dimension_names", [])
+    dimension_names = ann.get("criterion_names", ann.get("dimension_names", []))
 
     ratings = compute_ratings(
         models=model_names,
@@ -37,8 +37,8 @@ def analyze_arena_annotations(
         judge_model=meta["judge_model"],
         judge_mode=meta["judge_mode"],
         matchmaker_strategy=meta["matchmaker"],
-        rubric_name=meta["rubric"],
-        rubric_definition=ann.get("rubric_definition", {}),
+        criteria_name=meta.get("criteria", meta.get("rubric", "default")),
+        criteria_definition=ann.get("criteria_definition", ann.get("rubric_definition", {})),
         n_instructions=meta["n_instructions"],
         instruction_metadata=ann.get("instruction_metadata", []),
         model_scores=ann.get("model_scores", {}),

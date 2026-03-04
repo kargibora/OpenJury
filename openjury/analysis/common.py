@@ -49,7 +49,7 @@ def compute_agreement_metrics(
     dataset: str,
     judge_model: str,
     judge_mode: str,
-    rubric: str,
+    criteria: str,
     swap_debiasing: bool,
     language: str | None = None,
 ) -> dict[str, Any]:
@@ -108,7 +108,7 @@ def compute_agreement_metrics(
         "dataset": dataset,
         "judge_model": judge_model,
         "judge_mode": judge_mode,
-        "rubric": rubric,
+        "criteria": criteria,
         "swap_debiasing": swap_debiasing,
         "n_samples": n_total,
         "n_valid": n_valid,
@@ -150,7 +150,7 @@ def log_agreement_summary(metrics: dict[str, Any]) -> None:
         )
     logger.info("  Judge:             %s", metrics["judge_model"])
     logger.info("  Mode:              %s", metrics["judge_mode"])
-    logger.info("  Rubric:            %s", metrics["rubric"])
+    logger.info("  Criteria:          %s", metrics["criteria"])
     logger.info("  Swap debiasing:    %s", "yes" if metrics["swap_debiasing"] else "no")
     logger.info("───────────────────────────────────────────────────")
     if metrics["cohens_kappa"] is not None:
