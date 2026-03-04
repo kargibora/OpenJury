@@ -15,7 +15,7 @@
     "enable_thinking": false
   },
 
-  "rubric": "default",
+  "criteria": "default",
 
   "matchmaker": {
     "strategy": "random_pairs",

@@ -14,7 +14,7 @@
     "max_tokens": 2048
   },
 
-  "rubric": "default",
+  "criteria": "default",
 
   "matchmaker": {
     "strategy": "random_pairs",

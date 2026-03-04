@@ -7,7 +7,7 @@ The branch is intended to track and incorporate future relevant changes from `ma
 
 # OpenJury: LLM Evaluation with a Swappable Judge
 
-OpenJury is a toolkit for running head-to-head and K-model LLM evaluations with configurable judge models, rubrics, and datasets.
+OpenJury is a toolkit for running head-to-head and K-model LLM evaluations with configurable judge models, criteria, and datasets.
 
 Primary command model:
 - `openjury-generate` for completion generation
@@ -86,7 +86,7 @@ uv run openjury-evaluate arena \
   --judge_model OpenRouter/deepseek/deepseek-chat-v3.1 \
   --dataset alpaca-eval \
   --n_instructions 20 \
-  --rubric default \
+  --criteria default \
   --output_dir results/arena/demo
 ```
 
@@ -148,7 +148,7 @@ uv run openjury-evaluate arena \
   --judge_model OpenRouter/qwen/qwen3-32b \
   --dataset alpaca-eval \
   --n_instructions 50 \
-  --rubric default \
+  --criteria default \
   --output_dir results/arena/my_model_test
 ```
 
@@ -187,7 +187,7 @@ Then evaluate using an arena config (example `my_arena.json`):
     "mode": "samplewise",
     "max_tokens": 2048
   },
-  "rubric": "default",
+  "criteria": "default",
   "output_dir": "results/arena/staged_test"
 }
 ```
@@ -236,7 +236,7 @@ Minimal config example:
     "max_tokens": 2048,
     "temperature": 0.0
   },
-  "rubric": "default",
+  "criteria": "default",
   "matchmaker": {
     "strategy": "round_robin"
   },
@@ -277,7 +277,7 @@ Use `openjury-generate` to create completions separately, then reference the par
 
 This is useful for:
 - running generation and judging on different machines
-- reusing a fixed completion set across multiple judges/rubrics
+- reusing a fixed completion set across multiple judges/criteria
 - SLURM/job-based workflows
 
 ### 3) Staged evaluation (annotate first, analyze later)
@@ -392,7 +392,7 @@ You can also point to a pre-generated completions parquet file:
 
 ## Judge Modes
 
-- `samplewise` (default): scores each model independently on the rubric
+- `samplewise` (default): scores each model independently on the criteria
 - `pairwise`: compares completions side-by-side. 
 
 Set in config:
@@ -498,31 +498,31 @@ LiteLLM/anthropic/claude-3-5-sonnet
 LlamaCpp/./models/qwen2.5-0.5b-instruct-q8_0.gguf
 ```
 
-## Rubrics
+## Criteria
 
-Built-in rubrics:
+Built-in criteria sets:
 - `default`
 - `coding`
 - `translation`
-- `overall` (single-dimension rubric for single-score evaluation)
+- `overall` (single-criterion set for single-score evaluation)
 
-There is no separate legacy "single-score without rubric" mode in the current pipeline.
+There is no separate legacy "single-score without criteria" mode in the current pipeline.
 Use `overall` when you want a single scalar quality score per completion.
 
-Use a built-in rubric:
+Use a built-in criteria set:
 
 ```bash
-uv run openjury-evaluate arena --config my_arena.json --rubric coding
+uv run openjury-evaluate arena --config my_arena.json --criteria coding
 ```
 
-Use a custom rubric by setting `rubric` to a JSON file path in the config.
+Use a custom criteria set by setting `criteria` to a JSON file path in the config.
 
-Custom rubric JSON shape:
+Custom criteria JSON shape:
 
 ```json
 {
   "name": "custom",
-  "description": "My rubric",
+  "description": "My criteria set",
   "dimensions": [
     {
       "name": "helpfulness",
@@ -544,7 +544,7 @@ Custom rubric JSON shape:
 ## Outputs
 
 The arena pipeline writes:
-- `arena.json` (matches, rubric scores, ratings, metadata)
+- `arena.json` (matches, criteria scores, ratings, metadata)
 - `arena_config.json` (config snapshot)
 
 Typical run command:
