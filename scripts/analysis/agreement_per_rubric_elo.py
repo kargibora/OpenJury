@@ -39,73 +39,17 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
-from openjury.arena.config import MatchResult
-from openjury.arena.ratings import fit_multi_bt
-
-# ---------------------------------------------------------------------------
-BT_TO_ELO = 400.0 / math.log(10.0)
-ELO_BASE = 1500.0
-
-COLORS = {
-    "human": "#0f766e",
-    "judge": "#b45309",
-    "neutral": "#334155",
-    "band": "#d6d3c8",
-    "text": "#1f1f1a",
-    "muted": "#6f7268",
-}
-
-DIM_PALETTE = [
-    "#2563eb",  # adherence
-    "#dc2626",  # clarity
-    "#059669",  # completeness
-    "#d97706",  # factuality
-    "#7c3aed",  # fluency
-    "#db2777",  # helpfulness
-    "#0891b2",  # spare
-    "#4f46e5",  # spare
-]
-
-
-# ── helpers ────────────────────────────────────────────────────────────────
-def _apply_theme(ax, *, title="", xlabel="", ylabel=""):
-    ax.set_facecolor("white")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=8, color=COLORS["text"])
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10, color=COLORS["text"])
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10, color=COLORS["text"])
-    for sp in ["top", "right"]:
-        ax.spines[sp].set_visible(False)
-    ax.spines["left"].set_color(COLORS["band"])
-    ax.spines["bottom"].set_color(COLORS["band"])
-    ax.tick_params(colors=COLORS["text"], labelsize=9)
-    ax.grid(True, alpha=0.25, linewidth=0.5, color=COLORS["band"])
-
-
-def shorten(name: str) -> str:
-    return str(name).rsplit("/", 1)[-1]
-
-
-def load_frame(artifact_path: Path) -> pd.DataFrame:
-    with artifact_path.open(encoding="utf-8") as f:
-        artifact = json.load(f)
-    df = pd.DataFrame(artifact["per_sample"])
-    if "metadata" in df.columns:
-        meta = pd.json_normalize(df["metadata"]).add_prefix("meta_")
-        df = pd.concat([df.drop(columns=["metadata"]), meta], axis=1)
-    return df
-
-
-def infer_dimensions(frame: pd.DataFrame) -> list[str]:
-    for val in frame.get("scores_a", []):
-        if isinstance(val, dict) and val:
-            return sorted(val.keys())
-    return []
-
-
-def model_universe(frame: pd.DataFrame) -> list[str]:
-    return sorted(set(frame["model_a"]).union(set(frame["model_b"])))
+from plotting import (
+    COLORS,
+    DIM_PALETTE,
+    apply_minimal_theme as _apply_theme,
+    fit_bt_elo,
+    infer_score_dimensions as infer_dimensions,
+    load_frame,
+    model_universe,
+    resolve_artifact_path,
+    shorten,
+)
 
 
 # ── single-dimension preference derivation ─────────────────────────────────
@@ -139,43 +83,6 @@ def add_single_dim_prefs(df: pd.DataFrame, dims: list[str]) -> pd.DataFrame:
             for sa, sb in zip(out["scores_a"], out["scores_b"])
         ]
     return out
-
-
-# ── BT-Elo fitting ────────────────────────────────────────────────────────
-def _build_matches(frame: pd.DataFrame, pref_col: str) -> list[MatchResult]:
-    valid = frame[frame[pref_col].notna()].copy()
-    # Filter decisive
-    valid = valid[np.abs(valid[pref_col].astype(float) - 0.5) > 0.05]
-    matches = []
-    for idx, row in valid.iterrows():
-        matches.append(
-            MatchResult(
-                model_a=str(row["model_a"]),
-                model_b=str(row["model_b"]),
-                instruction_index=int(idx),
-                scores_a=row.get("scores_a", {}) or {},
-                scores_b=row.get("scores_b", {}) or {},
-                preference=float(row[pref_col]),
-                instruction="",
-                instruction_id="",
-                instruction_metadata={},
-                completion_a="",
-                completion_b="",
-                raw_judge_output="",
-                raw_judge_output_swapped=None,
-            )
-        )
-    return matches
-
-
-def fit_bt_elo(frame: pd.DataFrame, pref_col: str, models: list[str],
-               reg: float = 0.01) -> dict[str, float]:
-    theta = fit_multi_bt(
-        models=models,
-        matches=_build_matches(frame, pref_col),
-        regularization=reg,
-    )
-    return {m: ELO_BASE + BT_TO_ELO * v for m, v in theta.items()}
 
 
 # ── core analysis ──────────────────────────────────────────────────────────
@@ -438,15 +345,9 @@ def save_radar_plot(rq: pd.DataFrame, dims: list[str], path: Path):
     plt.close(fig)
 
 
-def save_dashboard(rq, elo_table, delta_table, dims, path: Path):
-    """2×2 dashboard."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
-    fig.patch.set_facecolor("white")
-
-    # (0,0) Ranking quality bars
-    ax = axes[0, 0]
+def save_mae_bars(rq: pd.DataFrame, dims: list[str], path: Path):
+    """Horizontal bar chart: MAE per ranking source."""
     sources = rq["source"].tolist()
-    x = np.arange(len(sources))
     colors = []
     for s in sources:
         if s == "judge_all":
@@ -455,51 +356,47 @@ def save_dashboard(rq, elo_table, delta_table, dims, path: Path):
             colors.append(DIM_PALETTE[dims.index(s) % len(DIM_PALETTE)])
         else:
             colors.append(COLORS["neutral"])
-    ax.bar(x, rq["spearman_rho"], color=colors, alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels([s[:8].capitalize() if s != "judge_all" else "All" for s in sources],
-                       fontsize=8, rotation=20, ha="right")
-    _apply_theme(ax, title="Spearman ρ vs Human Elo", ylabel="ρ")
 
-    # (0,1) Best single-dim scatter (highest ρ)
-    ax = axes[0, 1]
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.4 * len(rq))))
+    fig.patch.set_facecolor("white")
+    ax.barh(np.arange(len(rq)), rq["mae"].tolist(), color=colors, alpha=0.8)
+    ax.set_yticks(np.arange(len(rq)))
+    ax.set_yticklabels(
+        [s[:8].capitalize() if s != "judge_all" else "All" for s in sources],
+        fontsize=8,
+    )
+    _apply_theme(ax, title="Mean |Elo − Human Elo|", xlabel="MAE (Elo points)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def save_best_dim_scatter(rq: pd.DataFrame, elo_table: pd.DataFrame, dims: list[str], path: Path):
+    """Scatter: best single rubric dimension Elo vs Human Elo."""
     best_dim = rq.loc[rq["source"].isin(dims)].iloc[0]["source"]
     human = elo_table["elo_human"].to_numpy()
     best_elo = elo_table[f"elo_{best_dim}"].to_numpy()
-    ax.scatter(best_elo, human, s=20, c=DIM_PALETTE[dims.index(best_dim) % len(DIM_PALETTE)],
-               alpha=0.7, edgecolor="white", linewidth=0.3)
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    fig.patch.set_facecolor("white")
+    ax.scatter(
+        best_elo, human, s=28,
+        c=DIM_PALETTE[dims.index(best_dim) % len(DIM_PALETTE)],
+        alpha=0.7, edgecolor="white", linewidth=0.3,
+    )
     lo = min(np.nanmin(best_elo), np.nanmin(human)) - 20
     hi = max(np.nanmax(best_elo), np.nanmax(human)) + 20
     ax.plot([lo, hi], [lo, hi], "--", color=COLORS["muted"], linewidth=0.7)
     mask = np.isfinite(best_elo) & np.isfinite(human)
     rho = sp_stats.spearmanr(best_elo[mask], human[mask]).statistic
-    _apply_theme(ax, title=f"Best dim: {best_dim.capitalize()} (ρ={rho:.3f})",
-                 xlabel=f"{best_dim.capitalize()} Elo", ylabel="Human Elo")
-
-    # (1,0) Delta heatmap (top 20)
-    ax = axes[1, 0]
-    top = delta_table.head(20)
-    delta_cols = [f"delta_{d}" for d in dims]
-    matrix = top[delta_cols].to_numpy(dtype=float)
-    vmax = min(np.nanmax(np.abs(matrix)), 250) if np.isfinite(matrix).any() else 100
-    im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(np.arange(len(dims)))
-    ax.set_xticklabels([d[:6].capitalize() for d in dims], fontsize=7, rotation=30, ha="right")
-    ax.set_yticks(np.arange(len(top)))
-    ax.set_yticklabels(top["short_model"], fontsize=6.5)
-    _apply_theme(ax, title="Elo Delta (dim − human), top 20")
-
-    # (1,1) MAE bars
-    ax = axes[1, 1]
-    ax.barh(np.arange(len(rq)), rq["mae"].tolist(), color=colors, alpha=0.8)
-    ax.set_yticks(np.arange(len(rq)))
-    ax.set_yticklabels([s[:8].capitalize() if s != "judge_all" else "All" for s in sources],
-                       fontsize=8)
-    _apply_theme(ax, title="Mean |Elo − Human Elo|", xlabel="MAE (Elo points)")
-
-    fig.suptitle("Per-Rubric Elo Analysis", fontsize=14,
-                 fontweight="bold", color=COLORS["text"], y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    _apply_theme(
+        ax,
+        title=f"Best dim: {best_dim.capitalize()} (ρ={rho:.3f})",
+        xlabel=f"{best_dim.capitalize()} Elo",
+        ylabel="Human Elo",
+    )
+    ax.set_aspect("equal", adjustable="datalim")
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -520,8 +417,9 @@ def main():
     plots_dir.mkdir(exist_ok=True)
 
     # ── Load ──
-    print(f"[load] {output_dir / args.artifact}", flush=True)
-    df = load_frame(output_dir / args.artifact)
+    artifact_path = resolve_artifact_path(output_dir, args.artifact)
+    print(f"[load] {artifact_path}", flush=True)
+    df = load_frame(artifact_path)
     dims = infer_dimensions(df)
     models = model_universe(df)
     print(f"[load] {len(df)} samples, {len(models)} models, dims: {dims}", flush=True)
@@ -561,7 +459,8 @@ def main():
     save_scatter_grid(elo_table, dims, plots_dir / "rubric_elo_scatter_grid.png")
     save_delta_heatmap(delta_table, dims, plots_dir / "rubric_elo_delta_heatmap.png")
     save_radar_plot(rq, dims, plots_dir / "rubric_elo_radar.png")
-    save_dashboard(rq, elo_table, delta_table, dims, plots_dir / "rubric_elo_dashboard.png")
+    save_mae_bars(rq, dims, plots_dir / "rubric_elo_mae.png")
+    save_best_dim_scatter(rq, elo_table, dims, plots_dir / "rubric_elo_best_dim_scatter.png")
     print("[plots] all plots saved", flush=True)
 
     # ── JSON summary ──

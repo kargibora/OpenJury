@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from pathlib import Path
 
@@ -42,74 +41,16 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
-# ---------------------------------------------------------------------------
-COLORS = {
-    "human": "#0f766e",
-    "judge": "#b45309",
-    "agree": "#2563eb",
-    "disagree": "#dc2626",
-    "neutral": "#334155",
-    "band": "#d6d3c8",
-    "text": "#1f1f1a",
-    "muted": "#6f7268",
-}
-
-DIM_PALETTE = [
-    "#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed", "#db2777",
-]
-
-
-# ── helpers ────────────────────────────────────────────────────────────────
-def _apply_theme(ax, *, title="", xlabel="", ylabel=""):
-    ax.set_facecolor("white")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=8, color=COLORS["text"])
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10, color=COLORS["text"])
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10, color=COLORS["text"])
-    for sp in ["top", "right"]:
-        ax.spines[sp].set_visible(False)
-    ax.spines["left"].set_color(COLORS["band"])
-    ax.spines["bottom"].set_color(COLORS["band"])
-    ax.tick_params(colors=COLORS["text"], labelsize=9)
-    ax.grid(True, alpha=0.25, linewidth=0.5, color=COLORS["band"])
-
-
-def load_frame(artifact_path: Path) -> pd.DataFrame:
-    with artifact_path.open(encoding="utf-8") as f:
-        artifact = json.load(f)
-    df = pd.DataFrame(artifact["per_sample"])
-    if "metadata" in df.columns:
-        meta = pd.json_normalize(df["metadata"]).add_prefix("meta_")
-        df = pd.concat([df.drop(columns=["metadata"]), meta], axis=1)
-    return df
-
-
-def infer_dimensions(frame: pd.DataFrame) -> list[str]:
-    for val in frame.get("scores_a", []):
-        if isinstance(val, dict) and val:
-            return sorted(val.keys())
-    return []
-
-
-def pref_to_sign(p: float) -> float:
-    """Map preference to direction: A-wins → -1, B-wins → +1, tie → 0."""
-    if p < 0.5:
-        return -1.0
-    if p > 0.5:
-        return 1.0
-    return 0.0
-
-
-def pref_to_label(p) -> str:
-    if p is None or (isinstance(p, float) and np.isnan(p)):
-        return "parse_error"
-    p = float(p)
-    if p < 0.5:
-        return "A"
-    if p > 0.5:
-        return "B"
-    return "tie"
+from plotting import (
+    COLORS,
+    DIM_PALETTE,
+    apply_minimal_theme as _apply_theme,
+    infer_score_dimensions as infer_dimensions,
+    load_frame,
+    pref_to_label,
+    pref_to_sign,
+    resolve_artifact_path,
+)
 
 
 # ── core data preparation ─────────────────────────────────────────────────
@@ -468,79 +409,6 @@ def save_direction_heatmap(direction_df: pd.DataFrame, dims: list[str], path: Pa
     plt.close(fig)
 
 
-def save_dashboard(alignment, rf, dims, predictive, direction_df, path: Path):
-    """2×2 dashboard summarising rubric disagreement analysis."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.patch.set_facecolor("white")
-
-    # (0,0) Alignment bars
-    ax = axes[0, 0]
-    x = np.arange(len(dims))
-    w = 0.35
-    rh = alignment.set_index("dimension").reindex(dims)["r_with_human_pref"].fillna(0).tolist()
-    rj = alignment.set_index("dimension").reindex(dims)["r_with_judge_pref"].fillna(0).tolist()
-    ax.bar(x - w/2, rh, w, color=COLORS["human"], alpha=0.85, label="Human")
-    ax.bar(x + w/2, rj, w, color=COLORS["judge"], alpha=0.85, label="Judge")
-    ax.set_xticks(x)
-    ax.set_xticklabels([d[:8].capitalize() for d in dims], fontsize=8)
-    ax.axhline(0, color=COLORS["text"], linewidth=0.5, alpha=0.3)
-    ax.legend(fontsize=7, loc="upper right")
-    _apply_theme(ax, title="Alignment: r(gap, pref)")
-
-    # (0,1) Box plots (agree vs disagree) for all dims
-    ax = axes[0, 1]
-    agree_means = []
-    disagree_means = []
-    for d in dims:
-        agree_means.append(rf.loc[rf["agree"], f"abs_gap_{d}"].dropna().mean())
-        disagree_means.append(rf.loc[~rf["agree"], f"abs_gap_{d}"].dropna().mean())
-    x = np.arange(len(dims))
-    ax.bar(x - w/2, agree_means, w, color=COLORS["agree"], alpha=0.7, label="Agree")
-    ax.bar(x + w/2, disagree_means, w, color=COLORS["disagree"], alpha=0.7, label="Disagree")
-    ax.set_xticks(x)
-    ax.set_xticklabels([d[:8].capitalize() for d in dims], fontsize=8)
-    ax.legend(fontsize=7, loc="upper right")
-    _apply_theme(ax, title="Mean |Gap| by Agree/Disagree")
-
-    # (1,0) Conflict rate
-    ax = axes[1, 0]
-    al = alignment.set_index("dimension").reindex(dims)
-    conflict = al["judge_conflict_rate"].fillna(0).tolist()
-    bars = ax.bar(np.arange(len(dims)), conflict,
-                  color=[DIM_PALETTE[i % len(DIM_PALETTE)] for i in range(len(dims))], alpha=0.85)
-    ax.set_xticks(np.arange(len(dims)))
-    ax.set_xticklabels([d[:8].capitalize() for d in dims], fontsize=8)
-    _apply_theme(ax, title="Judge-Conflict Rate")
-
-    # (1,1) Direction heatmap (if available)
-    ax = axes[1, 1]
-    if not direction_df.empty:
-        gap_cols = [f"mean_gap_{d}" for d in dims]
-        matrix = direction_df[gap_cols].to_numpy(dtype=float)
-        labels = direction_df["direction"].tolist()
-        vmax = np.nanmax(np.abs(matrix)) if np.isfinite(matrix).any() else 1.0
-        im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-        ax.set_xticks(np.arange(len(dims)))
-        ax.set_xticklabels([d[:6].capitalize() for d in dims], fontsize=7, rotation=30, ha="right")
-        ax.set_yticks(np.arange(len(labels)))
-        ax.set_yticklabels([l.replace("_", "\n") for l in labels], fontsize=7)
-        for (i, j), val in np.ndenumerate(matrix):
-            if np.isfinite(val):
-                c = "white" if abs(val) > 0.45 * vmax else COLORS["text"]
-                ax.text(j, i, f"{val:+.2f}", ha="center", va="center", fontsize=7, color=c)
-        _apply_theme(ax, title="Gap Profile by Direction")
-    else:
-        ax.text(0.5, 0.5, "Insufficient data", ha="center", va="center",
-                transform=ax.transAxes, fontsize=11, color=COLORS["muted"])
-        _apply_theme(ax, title="Gap Profile by Direction")
-
-    fig.suptitle("Rubric Dimension Disagreement Analysis", fontsize=14,
-                 fontweight="bold", color=COLORS["text"], y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
 # ── main ───────────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser(description="Rubric dimension disagreement analysis.")
@@ -556,8 +424,9 @@ def main():
     plots_dir.mkdir(exist_ok=True)
 
     # ── Load ──
-    print(f"[load] {output_dir / args.artifact}", flush=True)
-    df = load_frame(output_dir / args.artifact)
+    artifact_path = resolve_artifact_path(output_dir, args.artifact)
+    print(f"[load] {artifact_path}", flush=True)
+    df = load_frame(artifact_path)
     dims = infer_dimensions(df)
     print(f"[load] {len(df)} samples, {len(dims)} rubric dims: {dims}", flush=True)
 
@@ -604,8 +473,6 @@ def main():
     save_conflict_plot(alignment, plots_dir / "rubric_conflict_rate.png")
     save_predictive_plot(predictive, plots_dir / "rubric_predictive_power.png")
     save_direction_heatmap(direction_df, dims, plots_dir / "rubric_direction_heatmap.png")
-    save_dashboard(alignment, rf, dims, predictive, direction_df,
-                   plots_dir / "rubric_dashboard.png")
     print("[plots] all plots saved", flush=True)
 
     # ── JSON summary ──

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
+import warnings
 from pathlib import Path
 
 os.environ.setdefault("OPENJURY_LOG_LEVEL", "ERROR")
@@ -16,64 +16,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from openjury.arena.config import MatchResult
 from openjury.arena.ratings import fit_multi_bt
 
-
-BT_TO_ELO = 400.0 / math.log(10.0)
-ELO_BASE = 1500.0
-
-COLORS = {
-    "bg": "#fcfaf5",
-    "text": "#1f1f1a",
-    "muted": "#6f7268",
-    "human": "#0f766e",
-    "judge": "#b45309",
-    "band": "#d6d3c8",
-    "neutral": "#334155",
-    "good": "#0f766e",
-    "bad": "#dc2626",
-}
-
-
-def shorten_model_name(name: str) -> str:
-    parts = str(name).split("/")
-    return "/".join(parts[-2:]) if len(parts) >= 2 else str(name)
-
-
-def valid_pref_frame(frame: pd.DataFrame, pref_col: str) -> pd.DataFrame:
-    out = frame[frame[pref_col].notna()].copy()
-    out = out[np.abs(out[pref_col].astype(float) - 0.5) > 0.05].copy()
-    return out.reset_index(drop=True)
-
-
-def model_universe(frame: pd.DataFrame) -> list[str]:
-    return sorted(set(frame["model_a"]).union(set(frame["model_b"])))
-
-
-def build_matches(frame: pd.DataFrame, pref_col: str) -> list[MatchResult]:
-    matches: list[MatchResult] = []
-    valid = valid_pref_frame(frame, pref_col)
-
-    for idx, row in valid.iterrows():
-        matches.append(
-            MatchResult(
-                model_a=str(row["model_a"]),
-                model_b=str(row["model_b"]),
-                instruction_index=int(idx),
-                scores_a=row.get("scores_a", {}) or {},
-                scores_b=row.get("scores_b", {}) or {},
-                preference=float(row[pref_col]),
-                instruction=row.get("instruction", "") or "",
-                instruction_id=row.get("instruction_id", "") or "",
-                instruction_metadata={},
-                completion_a="",
-                completion_b="",
-                raw_judge_output="",
-                raw_judge_output_swapped=None,
-            )
-        )
-    return matches
+from plotting import (
+    BT_TO_ELO,
+    COLORS,
+    ELO_BASE,
+    apply_minimal_theme as _apply_theme,
+    build_matches,
+    load_frame as load_annotation_frame,
+    model_universe,
+    resolve_artifact_path,
+    shorten as shorten_model_name,
+    valid_decisive as valid_pref_frame,
+)
 
 
 def bt_theta_to_elo(theta: dict[str, float], base: float = ELO_BASE) -> dict[str, float]:
@@ -86,11 +42,13 @@ def fit_pool_bt(
     models: list[str],
     regularization: float,
 ) -> tuple[dict[str, float], dict[str, float]]:
-    theta = fit_multi_bt(
-        models=models,
-        matches=build_matches(frame, pref_col),
-        regularization=regularization,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"sklearn\.")
+        theta = fit_multi_bt(
+            models=models,
+            matches=build_matches(frame, pref_col, decisive_only=True),
+            regularization=regularization,
+        )
     return theta, bt_theta_to_elo(theta)
 
 
@@ -269,17 +227,6 @@ def conformal_quantile(scores: np.ndarray, alpha: float) -> float:
         raise ValueError("No valid conformal scores.")
     level = min(np.ceil((len(values) + 1) * (1 - alpha)) / len(values), 1.0)
     return float(np.quantile(values, level, method="higher"))
-
-
-def load_annotation_frame(artifact_path: Path) -> pd.DataFrame:
-    with artifact_path.open(encoding="utf-8") as f:
-        artifact = json.load(f)
-
-    df = pd.DataFrame(artifact["per_sample"])
-    if "metadata" in df.columns:
-        meta_df = pd.json_normalize(df["metadata"]).add_prefix("meta_")
-        df = pd.concat([df.drop(columns=["metadata"]), meta_df], axis=1)
-    return df
 
 
 def eligible_target_models(
@@ -565,27 +512,6 @@ def repeated_split_conformal(
     return df, summary
 
 
-def _apply_theme(
-    ax: plt.Axes,
-    title: str = "",
-    xlabel: str = "",
-    ylabel: str = "",
-) -> None:
-    """Apply a consistent minimal theme to an axes."""
-    ax.set_facecolor("white")
-    ax.set_title(title, fontsize=12, fontweight="bold", pad=10, color=COLORS["text"])
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10, color=COLORS["text"])
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10, color=COLORS["text"])
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    ax.spines["left"].set_color(COLORS["band"])
-    ax.spines["bottom"].set_color(COLORS["band"])
-    ax.tick_params(colors=COLORS["text"], labelsize=9)
-    ax.grid(True, alpha=0.25, linewidth=0.5, color=COLORS["band"])
-
-
 def save_scatter_plot(heldout: pd.DataFrame, path: Path) -> None:
     """Judge vs Human held-out Elo scatter with error bars."""
     fig, ax = plt.subplots(figsize=(7.5, 7.0))
@@ -752,207 +678,58 @@ def save_operational_plot(
     plt.close(fig)
 
 
-def save_residual_plot(heldout: pd.DataFrame, path: Path) -> None:
-    """Two-panel residual analysis: distribution + residual vs judge strength."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    fig.patch.set_facecolor("white")
-
-    residuals = heldout["bt_elo_residual"].dropna()
-    mean_r = residuals.mean()
-    std_r = residuals.std()
-
-    # Panel 1: histogram of signed residuals
-    ax1.hist(
-        residuals, bins=20, color=COLORS["neutral"],
-        alpha=0.7, edgecolor="white", linewidth=0.5,
-    )
-    ax1.axvline(0, color=COLORS["bad"], linewidth=1.0, linestyle="--", alpha=0.6)
-    ax1.axvline(mean_r, color=COLORS["human"], linewidth=1.2, alpha=0.8,
-                label=f"\u03bc = {mean_r:.1f}")
-    ax1.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(
-        ax1,
-        title=f"Residual Distribution  (\u03c3={std_r:.1f})",
-        xlabel="Elo Residual  (Human \u2212 Judge)",
-        ylabel="Count",
-    )
-
-    # Panel 2: residual vs judge Elo (check for strength-dependent bias)
-    ax2.scatter(
-        heldout["judge_bt_elo"], heldout["bt_elo_residual"],
-        s=28, c=COLORS["neutral"], alpha=0.7,
-        edgecolor="white", linewidth=0.4,
-    )
-    ax2.axhline(0, color=COLORS["bad"], linewidth=1.0, linestyle="--", alpha=0.6)
-
-    # Trend line
-    mask = np.isfinite(heldout["judge_bt_elo"]) & np.isfinite(heldout["bt_elo_residual"])
-    z = np.polyfit(heldout.loc[mask, "judge_bt_elo"], heldout.loc[mask, "bt_elo_residual"], 1)
-    x_line = np.linspace(heldout["judge_bt_elo"].min(), heldout["judge_bt_elo"].max(), 100)
-    ax2.plot(x_line, np.polyval(z, x_line), color=COLORS["judge"], linewidth=1.2, alpha=0.7)
-
-    top = heldout.nlargest(3, "abs_bt_elo_residual")
-    for _, row in top.iterrows():
-        ax2.annotate(
-            row["short_model"],
-            (row["judge_bt_elo"], row["bt_elo_residual"]),
-            fontsize=7, color=COLORS["muted"],
-            xytext=(5, 5), textcoords="offset points",
-        )
-
-    slope_per_100 = z[0] * 100
-    _apply_theme(
-        ax2,
-        title=f"Residual vs Judge Elo  (slope={slope_per_100:+.1f} / 100 Elo)",
-        xlabel="Judge BT-Elo",
-        ylabel="Elo Residual  (Human \u2212 Judge)",
-    )
-
-    fig.tight_layout(w_pad=3)
-    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
-def save_stability_plot(
-    repeat_df: pd.DataFrame, alpha: float, path: Path,
-) -> None:
-    """Two-panel repeated-split stability: coverage distribution + interval width."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
+def save_coverage_histogram(repeat_df: pd.DataFrame, alpha: float, path: Path) -> None:
+    """Histogram of empirical coverage across repeated splits."""
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor("white")
 
     coverages = repeat_df["empirical_coverage"]
-    ax1.hist(
+    ax.hist(
         coverages, bins=12, color=COLORS["human"],
         alpha=0.7, edgecolor="white", linewidth=0.5,
     )
-    ax1.axvline(
+    ax.axvline(
         1 - alpha, color=COLORS["bad"], linewidth=1.2, linestyle="--",
         label=f"Target ({1 - alpha:.0%})",
     )
-    ax1.axvline(
+    ax.axvline(
         coverages.mean(), color=COLORS["judge"], linewidth=1.2,
         label=f"Mean ({coverages.mean():.1%})",
     )
-    ax1.legend(fontsize=8, framealpha=0.9)
+    ax.legend(fontsize=8, framealpha=0.9)
     _apply_theme(
-        ax1,
+        ax,
         title=f"Coverage Across {len(repeat_df)} Splits",
         xlabel="Empirical Coverage",
         ylabel="Count",
     )
-
-    widths = repeat_df["median_interval_width"]
-    ax2.hist(
-        widths, bins=12, color=COLORS["judge"],
-        alpha=0.7, edgecolor="white", linewidth=0.5,
-    )
-    ax2.axvline(
-        widths.median(), color=COLORS["human"], linewidth=1.2,
-        label=f"Median ({widths.median():.0f})",
-    )
-    ax2.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(
-        ax2,
-        title="Interval Width Across Splits",
-        xlabel="Median Interval Width (Elo)",
-        ylabel="Count",
-    )
-
-    fig.tight_layout(w_pad=3)
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
-def save_dashboard_plot(
-    heldout: pd.DataFrame,
-    operational: pd.DataFrame,
-    repeat_df: pd.DataFrame,
-    alpha: float,
-    qhat: float,
-    path: Path,
-) -> None:
-    """2\u00d72 summary dashboard."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
+def save_interval_width_histogram(repeat_df: pd.DataFrame, path: Path) -> None:
+    """Histogram of median interval widths across repeated splits."""
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor("white")
 
-    # (0,0) Scatter
-    ax = axes[0, 0]
-    r = heldout[["judge_bt_elo", "human_bt_elo"]].corr().iloc[0, 1]
-    ax.scatter(
-        heldout["judge_bt_elo"], heldout["human_bt_elo"],
-        s=26, c=COLORS["neutral"], alpha=0.7,
-        edgecolor="white", linewidth=0.4,
+    widths = repeat_df["median_interval_width"]
+    ax.hist(
+        widths, bins=12, color=COLORS["judge"],
+        alpha=0.7, edgecolor="white", linewidth=0.5,
     )
-    lo = min(heldout["judge_bt_elo"].min(), heldout["human_bt_elo"].min()) - 20
-    hi = max(heldout["judge_bt_elo"].max(), heldout["human_bt_elo"].max()) + 20
-    ax.plot([lo, hi], [lo, hi], "--", color=COLORS["muted"], linewidth=0.8, alpha=0.5)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    ax.set_aspect("equal")
-    _apply_theme(ax, title=f"Judge vs Human Elo (r={r:.3f})",
-                 xlabel="Judge BT-Elo", ylabel="Human BT-Elo")
-
-    # (0,1) Residual distribution
-    ax = axes[0, 1]
-    res = heldout["bt_elo_residual"].dropna()
-    ax.hist(res, bins=18, color=COLORS["neutral"], alpha=0.7,
-            edgecolor="white", linewidth=0.5)
-    ax.axvline(0, color=COLORS["bad"], linewidth=1.0, linestyle="--", alpha=0.6)
-    _apply_theme(ax, title=f"Residual  (\u03bc={res.mean():.1f}, \u03c3={res.std():.1f})",
-                 xlabel="Human \u2212 Judge Elo", ylabel="Count")
-
-    # (1,0) Coverage stability
-    ax = axes[1, 0]
-    cov = repeat_df["empirical_coverage"]
-    ax.hist(cov, bins=10, color=COLORS["human"], alpha=0.7,
-            edgecolor="white", linewidth=0.5)
-    ax.axvline(1 - alpha, color=COLORS["bad"], linewidth=1.2, linestyle="--")
-    _apply_theme(ax, title=f"Coverage Stability ({len(repeat_df)} splits)",
-                 xlabel="Empirical Coverage", ylabel="Count")
-
-    # (1,1) Key metrics
-    ax = axes[1, 1]
-    ax.axis("off")
-
-    op_covered = (
-        (operational["human_bt_elo"] >= operational["deploy_interval_lo"])
-        & (operational["human_bt_elo"] <= operational["deploy_interval_hi"])
+    ax.axvline(
+        widths.median(), color=COLORS["human"], linewidth=1.2,
+        label=f"Median ({widths.median():.0f})",
     )
-    op_coverage = op_covered.mean()
-    rho = heldout[["judge_bt_elo", "human_bt_elo"]].corr(method="spearman").iloc[0, 1]
-
-    metrics = [
-        ("Eligible models", f"{len(heldout)}"),
-        ("Pearson r", f"{r:.3f}"),
-        ("Spearman \u03c1", f"{rho:.3f}"),
-        ("Mean |residual|", f"{heldout['abs_bt_elo_residual'].mean():.1f} Elo"),
-        ("Median |residual|", f"{heldout['abs_bt_elo_residual'].median():.1f} Elo"),
-        ("Median judge SE", f"{heldout['judge_bt_elo_se'].median():.1f} Elo"),
-        ("", ""),
-        ("Target coverage", f"{1 - alpha:.0%}"),
-        ("Operational \u0071\u0302", f"{qhat:.2f}"),
-        ("Operational coverage", f"{op_coverage:.0%}"),
-        ("Median interval width", f"{operational['deploy_interval_width'].median():.0f} Elo"),
-        ("", ""),
-        ("Split coverage \u03bc\u00b1\u03c3", f"{cov.mean():.1%} \u00b1 {cov.std():.1%}"),
-    ]
-
-    y_pos = 0.95
-    for label, value in metrics:
-        if label == "":
-            y_pos -= 0.03
-            continue
-        ax.text(0.05, y_pos, label, fontsize=10, color=COLORS["muted"],
-                transform=ax.transAxes, va="top")
-        ax.text(0.60, y_pos, value, fontsize=10, fontweight="bold",
-                color=COLORS["text"], transform=ax.transAxes, va="top")
-        y_pos -= 0.07
-
-    fig.suptitle(
-        "Conformal Calibration Summary", fontsize=14,
-        fontweight="bold", color=COLORS["text"], y=0.98,
+    ax.legend(fontsize=8, framealpha=0.9)
+    _apply_theme(
+        ax,
+        title="Interval Width Across Splits",
+        xlabel="Median Interval Width (Elo)",
+        ylabel="Count",
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -1077,7 +854,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir).resolve()
-    artifact_path = output_dir / args.artifact
+    artifact_path = resolve_artifact_path(output_dir, args.artifact)
     heldout_partial_path = output_dir / "agreement_heldout_model_bt_elo.partial.csv"
     repeat_partial_path = output_dir / "agreement_heldout_model_bt_elo_conformal_repeats.partial.csv"
 
@@ -1128,9 +905,10 @@ def main() -> None:
     scatter_path = plots_dir / "conformal_scatter.png"
     interval_path = plots_dir / "conformal_intervals.png"
     operational_plot_path = plots_dir / "conformal_operational.png"
-    residual_path = plots_dir / "conformal_residuals.png"
-    stability_path = plots_dir / "conformal_stability.png"
-    dashboard_path = plots_dir / "conformal_dashboard.png"
+    residual_hist_path = plots_dir / "conformal_residual_histogram.png"
+    residual_strength_path = plots_dir / "conformal_residual_vs_strength.png"
+    coverage_path = plots_dir / "conformal_coverage_histogram.png"
+    width_path = plots_dir / "conformal_interval_width_histogram.png"
 
     # --- Save CSVs ------------------------------------------------------------
     heldout.to_csv(heldout_path, index=False)
@@ -1143,9 +921,10 @@ def main() -> None:
     save_scatter_plot(heldout, scatter_path)
     save_conformal_plot(conformal_test, args.alpha, interval_path)
     save_operational_plot(operational, args.alpha, qhat_all, operational_plot_path)
-    save_residual_plot(heldout, residual_path)
-    save_stability_plot(repeat_df, args.alpha, stability_path)
-    save_dashboard_plot(heldout, operational, repeat_df, args.alpha, qhat_all, dashboard_path)
+    save_residual_histogram(heldout, residual_hist_path)
+    save_residual_vs_strength(heldout, residual_strength_path)
+    save_coverage_histogram(repeat_df, args.alpha, coverage_path)
+    save_interval_width_histogram(repeat_df, width_path)
     print("[plots] all plots saved", flush=True)
 
     if heldout_partial_path.exists():
@@ -1199,7 +978,8 @@ def main() -> None:
     saved_files = [
         heldout_path, conformal_path, operational_path, repeat_path,
         report_table_path, scatter_path, interval_path, operational_plot_path,
-        residual_path, stability_path, dashboard_path, summary_path,
+        residual_hist_path, residual_strength_path,
+        coverage_path, width_path, summary_path,
     ]
     for p in saved_files:
         print(f"Saved: {p}")

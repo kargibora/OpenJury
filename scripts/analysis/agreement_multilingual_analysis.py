@@ -22,6 +22,7 @@ from agreement_analysis_common import (
     load_annotation_artifact,
     maybe_subsample_frame,
     pct,
+    resolve_artifact_path,
     save_figure,
     style_axes,
     wrap_labels,
@@ -373,7 +374,7 @@ def main() -> None:
     model_language_stability.to_csv(stability_path, index=False)
 
     summary = {
-        "artifact": str((output_dir / args.artifact).resolve()),
+        "artifact": str(resolve_artifact_path(output_dir, args.artifact).resolve()),
         "n_pair_rows": int(len(df)),
         "n_languages": int(len(language_summary)),
         "language_col": args.language_col,

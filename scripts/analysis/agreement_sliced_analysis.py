@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
-from collections import defaultdict
 from pathlib import Path
 
 os.environ.setdefault("OPENJURY_LOG_LEVEL", "ERROR")
@@ -29,113 +27,21 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from plotting import (
+    COLORS,
+    ELO_BASE,
+    apply_minimal_theme as _apply_theme,
+    fit_bt_elo,
+    load_frame,
+    model_universe,
+    pref_to_label,
+    resolve_artifact_path,
+    shorten,
+    valid_decisive,
+)
 from openjury.analysis.common import compute_cohen_kappa
-from openjury.arena.config import MatchResult
-from openjury.arena.ratings import fit_multi_bt
-
-# ---------------------------------------------------------------------------
-BT_TO_ELO = 400.0 / math.log(10.0)
-ELO_BASE = 1500.0
-
-COLORS = {
-    "human": "#0f766e",
-    "judge": "#b45309",
-    "neutral": "#334155",
-    "band": "#d6d3c8",
-    "text": "#1f1f1a",
-    "muted": "#6f7268",
-    "good": "#0f766e",
-    "bad": "#dc2626",
-    "tier_top": "#2563eb",
-    "tier_mid": "#7c3aed",
-    "tier_low": "#dc2626",
-}
 
 TIER_PALETTE = [COLORS["tier_top"], COLORS["tier_mid"], COLORS["tier_low"]]
-
-
-# ── helpers ────────────────────────────────────────────────────────────────
-def _apply_theme(ax, *, title="", xlabel="", ylabel=""):
-    ax.set_facecolor("white")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=8, color=COLORS["text"])
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10, color=COLORS["text"])
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10, color=COLORS["text"])
-    for sp in ["top", "right"]:
-        ax.spines[sp].set_visible(False)
-    ax.spines["left"].set_color(COLORS["band"])
-    ax.spines["bottom"].set_color(COLORS["band"])
-    ax.tick_params(colors=COLORS["text"], labelsize=9)
-    ax.grid(True, alpha=0.25, linewidth=0.5, color=COLORS["band"])
-
-
-def shorten(name: str) -> str:
-    return str(name).rsplit("/", 1)[-1]
-
-
-def load_frame(artifact_path: Path) -> pd.DataFrame:
-    with artifact_path.open(encoding="utf-8") as f:
-        artifact = json.load(f)
-    df = pd.DataFrame(artifact["per_sample"])
-    if "metadata" in df.columns:
-        meta = pd.json_normalize(df["metadata"]).add_prefix("meta_")
-        df = pd.concat([df.drop(columns=["metadata"]), meta], axis=1)
-    return df
-
-
-def pref_to_label(p) -> str:
-    if p is None or (isinstance(p, float) and np.isnan(p)):
-        return "parse_error"
-    p = float(p)
-    if p < 0.5:
-        return "A"
-    if p > 0.5:
-        return "B"
-    return "tie"
-
-
-def model_universe(frame: pd.DataFrame) -> list[str]:
-    return sorted(set(frame["model_a"]).union(set(frame["model_b"])))
-
-
-def valid_decisive(frame: pd.DataFrame, pref_col: str) -> pd.DataFrame:
-    out = frame[frame[pref_col].notna()].copy()
-    out = out[np.abs(out[pref_col].astype(float) - 0.5) > 0.05]
-    return out.reset_index(drop=True)
-
-
-def _build_matches(frame, pref_col):
-    valid = valid_decisive(frame, pref_col)
-    matches = []
-    for idx, row in valid.iterrows():
-        matches.append(
-            MatchResult(
-                model_a=str(row["model_a"]),
-                model_b=str(row["model_b"]),
-                instruction_index=int(idx),
-                scores_a=row.get("scores_a", {}) or {},
-                scores_b=row.get("scores_b", {}) or {},
-                preference=float(row[pref_col]),
-                instruction="",
-                instruction_id="",
-                instruction_metadata={},
-                completion_a="",
-                completion_b="",
-                raw_judge_output="",
-                raw_judge_output_swapped=None,
-            )
-        )
-    return matches
-
-
-def fit_bt_elo(frame, pref_col, models, reg=0.01):
-    theta = fit_multi_bt(
-        models=models,
-        matches=_build_matches(frame, pref_col),
-        regularization=reg,
-    )
-    return {m: ELO_BASE + BT_TO_ELO * v for m, v in theta.items()}
 
 
 def infer_model_family(model: str) -> str:
@@ -344,59 +250,82 @@ def assign_model_tier(frame: pd.DataFrame, model_table: pd.DataFrame) -> pd.Data
 
 
 # ── plotting ───────────────────────────────────────────────────────────────
-def save_language_agreement_plot(lang_table: pd.DataFrame, path: Path):
-    """Horizontal bar chart: κ and accuracy by language."""
+def save_language_kappa_plot(lang_table: pd.DataFrame, path: Path):
+    """Horizontal bar chart: κ by language."""
     plot_df = lang_table[lang_table["slice"] != "ALL"].copy()
-    plot_df = plot_df.sort_values("n_samples", ascending=True).tail(25)  # top 25 langs
+    plot_df = plot_df.sort_values("n_samples", ascending=True).tail(25)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, max(5, 0.3 * len(plot_df))))
+    fig, ax = plt.subplots(figsize=(8, max(5, 0.3 * len(plot_df))))
     fig.patch.set_facecolor("white")
     y = np.arange(len(plot_df))
-
-    ax1.barh(y, plot_df["cohens_kappa"].fillna(0), color=COLORS["human"], alpha=0.8)
-    ax1.set_yticks(y)
-    ax1.set_yticklabels(plot_df["slice"], fontsize=8)
-    _apply_theme(ax1, title="Cohen's κ by Language", xlabel="κ")
-
-    ax2.barh(y, plot_df["accuracy_3class"].fillna(0), color=COLORS["judge"], alpha=0.8)
-    ax2.set_yticks(y)
-    ax2.set_yticklabels(plot_df["slice"], fontsize=8)
-    _apply_theme(ax2, title="3-Class Accuracy by Language", xlabel="Accuracy")
-
-    fig.tight_layout(w_pad=2)
+    ax.barh(y, plot_df["cohens_kappa"].fillna(0), color=COLORS["human"], alpha=0.8)
+    ax.set_yticks(y)
+    ax.set_yticklabels(plot_df["slice"], fontsize=8)
+    _apply_theme(ax, title="Cohen's κ by Language", xlabel="κ")
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
-def save_tier_agreement_plot(tier_table: pd.DataFrame, path: Path):
-    """Grouped bar chart: agreement metrics by model-pair tier."""
+def save_language_accuracy_plot(lang_table: pd.DataFrame, path: Path):
+    """Horizontal bar chart: accuracy by language."""
+    plot_df = lang_table[lang_table["slice"] != "ALL"].copy()
+    plot_df = plot_df.sort_values("n_samples", ascending=True).tail(25)
+
+    fig, ax = plt.subplots(figsize=(8, max(5, 0.3 * len(plot_df))))
+    fig.patch.set_facecolor("white")
+    y = np.arange(len(plot_df))
+    ax.barh(y, plot_df["accuracy_3class"].fillna(0), color=COLORS["judge"], alpha=0.8)
+    ax.set_yticks(y)
+    ax.set_yticklabels(plot_df["slice"], fontsize=8)
+    _apply_theme(ax, title="3-Class Accuracy by Language", xlabel="Accuracy")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def save_tier_kappa_plot(tier_table: pd.DataFrame, path: Path):
+    """Grouped bar chart: κ by model-pair tier."""
     plot_df = tier_table[tier_table["slice"] != "ALL"].copy()
     tiers = plot_df["slice"].tolist()
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
+    fig, ax = plt.subplots(figsize=(7, 5))
     fig.patch.set_facecolor("white")
     x = np.arange(len(tiers))
     w = 0.35
 
     kappa_vals = plot_df["cohens_kappa"].fillna(0).tolist()
     kappa_dec = plot_df["cohens_kappa_decisive"].fillna(0).tolist()
-    ax1.bar(x - w/2, kappa_vals, w, color=COLORS["human"], alpha=0.8, label="κ (3-class)")
-    ax1.bar(x + w/2, kappa_dec, w, color=COLORS["judge"], alpha=0.8, label="κ (decisive)")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(tiers)
-    ax1.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax1, title="Cohen's κ by Model-Pair Tier", ylabel="κ")
+    ax.bar(x - w/2, kappa_vals, w, color=COLORS["human"], alpha=0.8, label="κ (3-class)")
+    ax.bar(x + w/2, kappa_dec, w, color=COLORS["judge"], alpha=0.8, label="κ (decisive)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(tiers)
+    ax.legend(fontsize=8, framealpha=0.9)
+    _apply_theme(ax, title="Cohen's κ by Model-Pair Tier", ylabel="κ")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def save_tier_accuracy_plot(tier_table: pd.DataFrame, path: Path):
+    """Grouped bar chart: accuracy by model-pair tier."""
+    plot_df = tier_table[tier_table["slice"] != "ALL"].copy()
+    tiers = plot_df["slice"].tolist()
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    fig.patch.set_facecolor("white")
+    x = np.arange(len(tiers))
+    w = 0.35
 
     acc_vals = plot_df["accuracy_3class"].fillna(0).tolist()
     acc_dec = plot_df["accuracy_decisive"].fillna(0).tolist()
-    ax2.bar(x - w/2, acc_vals, w, color=COLORS["human"], alpha=0.8, label="Acc (3-class)")
-    ax2.bar(x + w/2, acc_dec, w, color=COLORS["judge"], alpha=0.8, label="Acc (decisive)")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(tiers)
-    ax2.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax2, title="Accuracy by Model-Pair Tier", ylabel="Accuracy")
-
-    fig.tight_layout(w_pad=3)
+    ax.bar(x - w/2, acc_vals, w, color=COLORS["human"], alpha=0.8, label="Acc (3-class)")
+    ax.bar(x + w/2, acc_dec, w, color=COLORS["judge"], alpha=0.8, label="Acc (decisive)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(tiers)
+    ax.legend(fontsize=8, framealpha=0.9)
+    _apply_theme(ax, title="Accuracy by Model-Pair Tier", ylabel="Accuracy")
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -468,58 +397,6 @@ def save_model_scatter_plot(model_table: pd.DataFrame, path: Path):
     plt.close(fig)
 
 
-def save_dashboard(lang_table, tier_table, family_table, model_table, path: Path):
-    """2×2 dashboard: language κ, tier κ, family bias, model scatter."""
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.patch.set_facecolor("white")
-
-    # (0,0) Top 15 languages by κ
-    ax = axes[0, 0]
-    lt = lang_table[lang_table["slice"] != "ALL"].sort_values("n_samples", ascending=True).tail(15)
-    y = np.arange(len(lt))
-    ax.barh(y, lt["cohens_kappa"].fillna(0), color=COLORS["human"], alpha=0.8)
-    ax.set_yticks(y)
-    ax.set_yticklabels(lt["slice"], fontsize=7.5)
-    _apply_theme(ax, title="κ by Language (top 15)")
-
-    # (0,1) Tier bars
-    ax = axes[0, 1]
-    tt = tier_table[tier_table["slice"] != "ALL"]
-    x = np.arange(len(tt))
-    ax.bar(x, tt["cohens_kappa"].fillna(0), color=COLORS["human"], alpha=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels(tt["slice"])
-    _apply_theme(ax, title="κ by Model-Pair Tier")
-
-    # (1,0) Family bias (top 15)
-    ax = axes[1, 0]
-    ft = family_table.sort_values("mean_residual").copy()
-    y = np.arange(len(ft))
-    colors = [COLORS["good"] if r > 0 else COLORS["bad"] for r in ft["mean_residual"]]
-    ax.barh(y, ft["mean_residual"], color=colors, alpha=0.8)
-    ax.axvline(0, color=COLORS["text"], linewidth=0.8, alpha=0.5)
-    ax.set_yticks(y)
-    ax.set_yticklabels(ft["family"], fontsize=7)
-    _apply_theme(ax, title="Family Bias (Human − Judge)")
-
-    # (1,1) Scatter
-    ax = axes[1, 1]
-    ax.scatter(model_table["judge_elo"], model_table["human_elo"],
-               s=25, c=COLORS["neutral"], alpha=0.7, edgecolor="white", linewidth=0.3)
-    lo = min(model_table["judge_elo"].min(), model_table["human_elo"].min()) - 20
-    hi = max(model_table["judge_elo"].max(), model_table["human_elo"].max()) + 20
-    ax.plot([lo, hi], [lo, hi], "--", color=COLORS["muted"], linewidth=0.8, alpha=0.5)
-    r = model_table[["judge_elo", "human_elo"]].corr().iloc[0, 1]
-    _apply_theme(ax, title=f"Judge vs Human Elo (r={r:.3f})",
-                 xlabel="Judge Elo", ylabel="Human Elo")
-
-    fig.suptitle("Sliced Agreement Analysis", fontsize=14,
-                 fontweight="bold", color=COLORS["text"], y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
 # ── main ───────────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser(description="Sliced agreement analysis.")
@@ -535,8 +412,9 @@ def main():
     output_dir = Path(args.output_dir).resolve()
     min_s = args.min_samples_per_slice
 
-    print(f"[start] loading {output_dir / args.artifact}", flush=True)
-    df = load_frame(output_dir / args.artifact)
+    artifact_path = resolve_artifact_path(output_dir, args.artifact)
+    print(f"[start] loading {artifact_path}", flush=True)
+    df = load_frame(artifact_path)
     print(f"[start] {len(df)} samples", flush=True)
 
     # ── Global agreement ──
@@ -579,12 +457,12 @@ def main():
     plots_dir.mkdir(exist_ok=True)
 
     if lang_col:
-        save_language_agreement_plot(lang_table, plots_dir / "sliced_language_agreement.png")
-    save_tier_agreement_plot(tier_table, plots_dir / "sliced_tier_agreement.png")
+        save_language_kappa_plot(lang_table, plots_dir / "sliced_language_kappa.png")
+        save_language_accuracy_plot(lang_table, plots_dir / "sliced_language_accuracy.png")
+    save_tier_kappa_plot(tier_table, plots_dir / "sliced_tier_kappa.png")
+    save_tier_accuracy_plot(tier_table, plots_dir / "sliced_tier_accuracy.png")
     save_family_bias_plot(family_table, plots_dir / "sliced_family_bias.png")
     save_model_scatter_plot(model_table, plots_dir / "sliced_model_scatter.png")
-    save_dashboard(lang_table, tier_table, family_table, model_table,
-                   plots_dir / "sliced_dashboard.png")
     print("[plots] all plots saved", flush=True)
 
     # ── JSON summary ──

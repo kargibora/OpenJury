@@ -1,0 +1,7 @@
+"""Shared helpers for OpenJury analysis scripts (backward-compat shim).
+
+This module re-exports everything from ``plotting.py`` so that existing
+scripts that ``from agreement_analysis_common import …`` keep working
+without changes.  **New code should import from ``plotting`` directly.**
+"""
+from plotting import *  # noqa: F401,F403

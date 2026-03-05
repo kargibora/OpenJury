@@ -42,6 +42,7 @@ from agreement_analysis_common import (
     normalized_weight_dict,
     reconstruct_preferences_from_bt_model,
     reconstruct_preferences_from_bt_model_by_group,
+    resolve_artifact_path,
     save_figure,
     score_matrices,
     style_axes,
@@ -972,7 +973,7 @@ def main() -> None:
         output_dir / "agreement_bt_human_model_reconstruction_summary.json"
     )
     summary = {
-        "artifact": str((output_dir / args.artifact).resolve()),
+        "artifact": str(resolve_artifact_path(output_dir, args.artifact).resolve()),
         "dataset": meta["dataset"],
         "judge_model": meta["judge_model"],
         "group_col": args.group_col,

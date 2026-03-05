@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from pathlib import Path
 
@@ -33,105 +32,18 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from plotting import (
+    COLORS,
+    apply_minimal_theme as _apply_theme,
+    fit_bt_elo,
+    load_frame,
+    model_universe,
+    pref_to_label,
+    resolve_artifact_path,
+    shorten,
+    valid_decisive,
+)
 from openjury.analysis.common import compute_cohen_kappa
-from openjury.arena.config import MatchResult
-from openjury.arena.ratings import fit_multi_bt
-
-# ---------------------------------------------------------------------------
-BT_TO_ELO = 400.0 / math.log(10.0)
-ELO_BASE = 1500.0
-
-COLORS = {
-    "human": "#0f766e",
-    "judge": "#b45309",
-    "neutral": "#334155",
-    "band": "#d6d3c8",
-    "text": "#1f1f1a",
-    "muted": "#6f7268",
-    "good": "#0f766e",
-    "bad": "#dc2626",
-}
-
-
-# ── helpers ────────────────────────────────────────────────────────────────
-def _apply_theme(ax, *, title="", xlabel="", ylabel=""):
-    ax.set_facecolor("white")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=8, color=COLORS["text"])
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10, color=COLORS["text"])
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10, color=COLORS["text"])
-    for sp in ["top", "right"]:
-        ax.spines[sp].set_visible(False)
-    ax.spines["left"].set_color(COLORS["band"])
-    ax.spines["bottom"].set_color(COLORS["band"])
-    ax.tick_params(colors=COLORS["text"], labelsize=9)
-    ax.grid(True, alpha=0.25, linewidth=0.5, color=COLORS["band"])
-
-
-def shorten(name: str) -> str:
-    return str(name).rsplit("/", 1)[-1]
-
-
-def load_frame(artifact_path: Path) -> pd.DataFrame:
-    with artifact_path.open(encoding="utf-8") as f:
-        artifact = json.load(f)
-    df = pd.DataFrame(artifact["per_sample"])
-    if "metadata" in df.columns:
-        meta = pd.json_normalize(df["metadata"]).add_prefix("meta_")
-        df = pd.concat([df.drop(columns=["metadata"]), meta], axis=1)
-    return df
-
-
-def valid_decisive(frame: pd.DataFrame, pref_col: str) -> pd.DataFrame:
-    out = frame[frame[pref_col].notna()].copy()
-    out = out[np.abs(out[pref_col].astype(float) - 0.5) > 0.05]
-    return out.reset_index(drop=True)
-
-
-def pref_to_label(p: float) -> str:
-    if p < 0.5:
-        return "A"
-    if p > 0.5:
-        return "B"
-    return "tie"
-
-
-def model_universe(frame: pd.DataFrame) -> list[str]:
-    return sorted(set(frame["model_a"]).union(set(frame["model_b"])))
-
-
-def _build_matches(frame: pd.DataFrame, pref_col: str) -> list[MatchResult]:
-    valid = valid_decisive(frame, pref_col)
-    matches = []
-    for idx, row in valid.iterrows():
-        matches.append(
-            MatchResult(
-                model_a=str(row["model_a"]),
-                model_b=str(row["model_b"]),
-                instruction_index=int(idx),
-                scores_a=row.get("scores_a", {}) or {},
-                scores_b=row.get("scores_b", {}) or {},
-                preference=float(row[pref_col]),
-                instruction="",
-                instruction_id="",
-                instruction_metadata={},
-                completion_a="",
-                completion_b="",
-                raw_judge_output="",
-                raw_judge_output_swapped=None,
-            )
-        )
-    return matches
-
-
-def fit_bt_elo(frame, pref_col, models, reg=0.01):
-    theta = fit_multi_bt(
-        models=models,
-        matches=_build_matches(frame, pref_col),
-        regularization=reg,
-    )
-    return {m: ELO_BASE + BT_TO_ELO * v for m, v in theta.items()}
 
 
 # ── core bootstrap loop ───────────────────────────────────────────────────
@@ -238,77 +150,52 @@ def save_elo_convergence_plot(summary: pd.DataFrame, path: Path):
     plt.close(fig)
 
 
-def save_ranking_convergence_plot(summary: pd.DataFrame, path: Path):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+def save_correlation_convergence_plot(summary: pd.DataFrame, path: Path):
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor("white")
-
-    _band_plot(ax1, summary, "pearson_r", color=COLORS["human"], label="Pearson r")
-    _band_plot(ax1, summary, "spearman_rho", color=COLORS["judge"], label="Spearman ρ")
-    ax1.legend(fontsize=9, framealpha=0.9)
-    _apply_theme(ax1, title="Ranking Correlation (Judge vs Human)",
+    _band_plot(ax, summary, "pearson_r", color=COLORS["human"], label="Pearson r")
+    _band_plot(ax, summary, "spearman_rho", color=COLORS["judge"], label="Spearman \u03c1")
+    ax.legend(fontsize=9, framealpha=0.9)
+    _apply_theme(ax, title="Ranking Correlation (Judge vs Human)",
                  xlabel="# bootstrap samples", ylabel="Correlation")
-    ax1.set_ylim(0, 1.05)
-
-    _band_plot(ax2, summary, "mae_centered_gap", color=COLORS["neutral"], label="MAE centred gap")
-    ax2.legend(fontsize=9, framealpha=0.9)
-    _apply_theme(ax2, title="Mean |Centred Elo Gap|",
-                 xlabel="# bootstrap samples", ylabel="Elo")
-    fig.tight_layout(w_pad=3)
-    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
-def save_agreement_convergence_plot(summary: pd.DataFrame, path: Path):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
-    fig.patch.set_facecolor("white")
-
-    _band_plot(ax1, summary, "cohens_kappa", color=COLORS["human"], label="Cohen's κ")
-    ax1.legend(fontsize=9, framealpha=0.9)
-    _apply_theme(ax1, title="Cohen's κ vs Sample Size",
-                 xlabel="# bootstrap samples", ylabel="κ")
-
-    _band_plot(ax2, summary, "accuracy_3class", color=COLORS["judge"], label="3-class accuracy")
-    ax2.legend(fontsize=9, framealpha=0.9)
-    _apply_theme(ax2, title="3-Class Agreement vs Sample Size",
-                 xlabel="# bootstrap samples", ylabel="Accuracy")
-    fig.tight_layout(w_pad=3)
-    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-
-
-def save_dashboard(summary: pd.DataFrame, path: Path):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.patch.set_facecolor("white")
-
-    ax = axes[0, 0]
-    _band_plot(ax, summary, "human_elo_mad", color=COLORS["human"], label="Human")
-    _band_plot(ax, summary, "judge_elo_mad", color=COLORS["judge"], label="Judge")
-    ax.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax, title="Elo Deviation from Oracle", ylabel="Mean |ΔElo|")
-
-    ax = axes[0, 1]
-    _band_plot(ax, summary, "pearson_r", color=COLORS["human"], label="r")
-    _band_plot(ax, summary, "spearman_rho", color=COLORS["judge"], label="ρ")
-    ax.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax, title="Ranking Correlation", ylabel="Correlation")
     ax.set_ylim(0, 1.05)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-    ax = axes[1, 0]
-    _band_plot(ax, summary, "cohens_kappa", color=COLORS["human"], label="κ")
-    ax.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax, title="Cohen's κ", ylabel="κ")
 
-    ax = axes[1, 1]
-    _band_plot(ax, summary, "accuracy_3class", color=COLORS["judge"], label="Accuracy")
-    ax.legend(fontsize=8, framealpha=0.9)
-    _apply_theme(ax, title="3-Class Accuracy", ylabel="Accuracy")
+def save_mae_convergence_plot(summary: pd.DataFrame, path: Path):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.patch.set_facecolor("white")
+    _band_plot(ax, summary, "mae_centered_gap", color=COLORS["neutral"], label="MAE centred gap")
+    ax.legend(fontsize=9, framealpha=0.9)
+    _apply_theme(ax, title="Mean |Centred Elo Gap|",
+                 xlabel="# bootstrap samples", ylabel="Elo")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-    for ax in axes.flat:
-        ax.set_xlabel("# samples", fontsize=9)
 
-    fig.suptitle("Bootstrap Convergence Dashboard", fontsize=14,
-                 fontweight="bold", color=COLORS["text"], y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+def save_kappa_convergence_plot(summary: pd.DataFrame, path: Path):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.patch.set_facecolor("white")
+    _band_plot(ax, summary, "cohens_kappa", color=COLORS["human"], label="Cohen's κ")
+    ax.legend(fontsize=9, framealpha=0.9)
+    _apply_theme(ax, title="Cohen's κ vs Sample Size",
+                 xlabel="# bootstrap samples", ylabel="κ")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def save_accuracy_convergence_plot(summary: pd.DataFrame, path: Path):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.patch.set_facecolor("white")
+    _band_plot(ax, summary, "accuracy_3class", color=COLORS["judge"], label="3-class accuracy")
+    ax.legend(fontsize=9, framealpha=0.9)
+    _apply_theme(ax, title="3-Class Agreement vs Sample Size",
+                 xlabel="# bootstrap samples", ylabel="Accuracy")
+    fig.tight_layout()
     fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -333,8 +220,9 @@ def main():
     output_dir = Path(args.output_dir).resolve()
     fractions = [float(f) for f in args.fractions.split(",")]
 
-    print(f"[start] loading {output_dir / args.artifact}", flush=True)
-    df = load_frame(output_dir / args.artifact)
+    artifact_path = resolve_artifact_path(output_dir, args.artifact)
+    print(f"[start] loading {artifact_path}", flush=True)
+    df = load_frame(artifact_path)
     print(f"[start] {len(df)} samples, fractions={fractions}", flush=True)
 
     models = model_universe(df)
@@ -392,9 +280,10 @@ def main():
 
     # Save plots
     save_elo_convergence_plot(summary, plots_dir / "convergence_elo_deviation.png")
-    save_ranking_convergence_plot(summary, plots_dir / "convergence_ranking.png")
-    save_agreement_convergence_plot(summary, plots_dir / "convergence_agreement.png")
-    save_dashboard(summary, plots_dir / "convergence_dashboard.png")
+    save_correlation_convergence_plot(summary, plots_dir / "convergence_ranking_correlation.png")
+    save_mae_convergence_plot(summary, plots_dir / "convergence_mae_gap.png")
+    save_kappa_convergence_plot(summary, plots_dir / "convergence_kappa.png")
+    save_accuracy_convergence_plot(summary, plots_dir / "convergence_accuracy.png")
 
     # JSON summary
     full_row = summary[summary["fraction"] == 1.0]

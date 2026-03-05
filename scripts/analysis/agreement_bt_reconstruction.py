@@ -25,6 +25,7 @@ from agreement_analysis_common import (
     maybe_subsample_frame,
     reconstruct_preferences_by_group,
     reconstruct_preferences_from_weights,
+    resolve_artifact_path,
     save_figure,
     style_axes,
     summarize_preference_schemes,
@@ -472,7 +473,7 @@ def main() -> None:
     )
 
     summary = {
-        "artifact": str((output_dir / args.artifact).resolve()),
+        "artifact": str(resolve_artifact_path(output_dir, args.artifact).resolve()),
         "dataset": meta["dataset"],
         "judge_model": meta["judge_model"],
         "group_col": args.group_col,
