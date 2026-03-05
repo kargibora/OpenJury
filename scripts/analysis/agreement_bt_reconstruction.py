@@ -87,17 +87,48 @@ def save_global_weight_plot(global_weight_view: pd.DataFrame, path: Path) -> Non
     save_figure(fig, path)
 
 
-def save_language_weight_heatmaps(
+def save_human_weight_heatmap(
     language_order: list[str],
     dimension_names: list[str],
     human_bt_by_lang: pd.DataFrame,
-    judge_bt_by_lang: pd.DataFrame,
     path: Path,
 ) -> None:
     human_weight_matrix = (
         human_bt_by_lang.pivot(index="group", columns="dimension", values="norm_weight")
         .reindex(index=language_order, columns=dimension_names)
     )
+    n_rows = len(human_weight_matrix)
+    human_matrix = human_weight_matrix.to_numpy(dtype=float)
+    vmax_human = np.nanmax(np.abs(human_matrix))
+
+    fig, ax = plt.subplots(figsize=(9, max(6.0, 0.42 * n_rows)))
+    im = ax.imshow(
+        human_weight_matrix.fillna(0.0).to_numpy(),
+        aspect="auto",
+        cmap="PuOr",
+        vmin=-vmax_human,
+        vmax=vmax_human,
+    )
+    style_axes(ax, grid_axis=None)
+    add_heatmap_grid(ax, human_weight_matrix.shape)
+    annotate_heatmap_values(ax, human_matrix, fmt="{:+.2f}", limit=110)
+    ax.set_title("Normalized Human BT Weights by Language", pad=14, loc="left")
+    ax.set_xticks(np.arange(len(dimension_names)))
+    ax.set_xticklabels(wrap_labels(dimension_names, width=14), rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(human_weight_matrix.index)))
+    ax.set_yticklabels(wrap_labels(human_weight_matrix.index, width=14))
+    cb = plt.colorbar(im, ax=ax, pad=0.02)
+    cb.set_label("Signed L1-normalized weight")
+    save_figure(fig, path)
+
+
+def save_weight_delta_heatmap(
+    language_order: list[str],
+    dimension_names: list[str],
+    human_bt_by_lang: pd.DataFrame,
+    judge_bt_by_lang: pd.DataFrame,
+    path: Path,
+) -> None:
     weight_delta = human_bt_by_lang.merge(
         judge_bt_by_lang,
         on=["group", "dimension"],
@@ -110,89 +141,65 @@ def save_language_weight_heatmaps(
         weight_delta.pivot(index="group", columns="dimension", values="norm_weight_delta")
         .reindex(index=language_order, columns=dimension_names)
     )
-
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(15.6, max(6.0, 0.42 * len(human_weight_matrix))),
-    )
-
-    human_matrix = human_weight_matrix.to_numpy(dtype=float)
-    vmax_human = np.nanmax(np.abs(human_matrix))
-
-    im0 = axes[0].imshow(
-        human_weight_matrix.fillna(0.0).to_numpy(),
-        aspect="auto",
-        cmap="PuOr",
-        vmin=-vmax_human,
-        vmax=vmax_human,
-    )
-    style_axes(axes[0], grid_axis=None)
-    add_heatmap_grid(axes[0], human_weight_matrix.shape)
-    annotate_heatmap_values(axes[0], human_matrix, fmt="{:+.2f}", limit=110)
-    axes[0].set_title("Normalized Human BT Weights by Language", pad=14, loc="left")
-    axes[0].set_xticks(np.arange(len(dimension_names)))
-    axes[0].set_xticklabels(wrap_labels(dimension_names, width=14), rotation=35, ha="right")
-    axes[0].set_yticks(np.arange(len(human_weight_matrix.index)))
-    axes[0].set_yticklabels(wrap_labels(human_weight_matrix.index, width=14))
-    cb0 = plt.colorbar(im0, ax=axes[0], pad=0.02)
-    cb0.set_label("Signed L1-normalized weight")
-
+    n_rows = len(weight_delta_matrix)
     vmax = np.nanmax(np.abs(weight_delta_matrix.to_numpy(dtype=float)))
-    im1 = axes[1].imshow(
+
+    fig, ax = plt.subplots(figsize=(9, max(6.0, 0.42 * n_rows)))
+    im = ax.imshow(
         weight_delta_matrix.fillna(0.0).to_numpy(),
         aspect="auto",
         cmap="coolwarm",
         vmin=-vmax,
         vmax=vmax,
     )
-    style_axes(axes[1], grid_axis=None)
-    add_heatmap_grid(axes[1], weight_delta_matrix.shape)
+    style_axes(ax, grid_axis=None)
+    add_heatmap_grid(ax, weight_delta_matrix.shape)
     annotate_heatmap_values(
-        axes[1],
+        ax,
         weight_delta_matrix.to_numpy(dtype=float),
         fmt="{:+.2f}",
         limit=110,
     )
-    axes[1].set_title("Judge Minus Human Normalized BT Weight", pad=14, loc="left")
-    axes[1].set_xticks(np.arange(len(dimension_names)))
-    axes[1].set_xticklabels(wrap_labels(dimension_names, width=14), rotation=35, ha="right")
-    axes[1].set_yticks(np.arange(len(weight_delta_matrix.index)))
-    axes[1].set_yticklabels(wrap_labels(weight_delta_matrix.index, width=14))
-    cb1 = plt.colorbar(im1, ax=axes[1], pad=0.02)
-    cb1.set_label("Judge norm weight - human norm weight")
+    ax.set_title("Judge Minus Human Normalized BT Weight", pad=14, loc="left")
+    ax.set_xticks(np.arange(len(dimension_names)))
+    ax.set_xticklabels(wrap_labels(dimension_names, width=14), rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(weight_delta_matrix.index)))
+    ax.set_yticklabels(wrap_labels(weight_delta_matrix.index, width=14))
+    cb = plt.colorbar(im, ax=ax, pad=0.02)
+    cb.set_label("Judge norm weight - human norm weight")
     save_figure(fig, path)
 
 
-def save_scheme_summary_plot(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
+def save_scheme_gap_bars(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
     plot_df = weight_scheme_summary.copy().sort_values("mean_abs_centered_gap")
     y_labels = wrap_labels(plot_df["scheme"], width=24)
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(15.0, 5.8),
-        gridspec_kw={"width_ratios": [1.0, 1.0]},
-    )
+    fig, ax = plt.subplots(figsize=(9, 5.8))
 
     bar_colors = plt.cm.YlOrBr(np.linspace(0.4, 0.82, len(plot_df)))
-    axes[0].barh(
+    ax.barh(
         y_labels,
         plot_df["mean_abs_centered_gap"],
         color=bar_colors,
         edgecolor="#ffffff",
         linewidth=1.0,
     )
-    style_axes(axes[0], grid_axis="x")
-    axes[0].set_title(
+    style_axes(ax, grid_axis="x")
+    ax.set_title(
         "Scheme-Level Elo Gap After Reconstructing Preferences",
         pad=14,
         loc="left",
     )
-    axes[0].set_xlabel("Mean |centered scheme Elo - centered human Elo|")
-    axes[0].set_ylabel("Preference scheme")
-    axes[0].set_xlim(0, plot_df["mean_abs_centered_gap"].max() * 1.18)
+    ax.set_xlabel("Mean |centered scheme Elo - centered human Elo|")
+    ax.set_ylabel("Preference scheme")
+    ax.set_xlim(0, plot_df["mean_abs_centered_gap"].max() * 1.18)
+    save_figure(fig, path)
 
-    sc = axes[1].scatter(
+
+def save_accuracy_fidelity_scatter(weight_scheme_summary: pd.DataFrame, path: Path) -> None:
+    plot_df = weight_scheme_summary.copy().sort_values("mean_abs_centered_gap")
+    fig, ax = plt.subplots(figsize=(9, 5.8))
+
+    sc = ax.scatter(
         plot_df["accuracy_vs_human"],
         plot_df["mean_abs_centered_gap"],
         s=120 + 240 * plot_df["judge_match_rate"],
@@ -201,12 +208,12 @@ def save_scheme_summary_plot(weight_scheme_summary: pd.DataFrame, path: Path) ->
         edgecolor="#ffffff",
         linewidth=0.8,
     )
-    style_axes(axes[1], grid_axis="both")
-    axes[1].set_title("Accuracy vs Elo-Fidelity Tradeoff", pad=14, loc="left")
-    axes[1].set_xlabel("Agreement with human labels")
-    axes[1].set_ylabel("Mean |centered Elo gap|")
-    format_percent_axis(axes[1], axis="x")
-    cb = plt.colorbar(sc, ax=axes[1], pad=0.02)
+    style_axes(ax, grid_axis="both")
+    ax.set_title("Accuracy vs Elo-Fidelity Tradeoff", pad=14, loc="left")
+    ax.set_xlabel("Agreement with human labels")
+    ax.set_ylabel("Mean |centered Elo gap|")
+    format_percent_axis(ax, axis="x")
+    cb = plt.colorbar(sc, ax=ax, pad=0.02)
     cb.set_label("Scheme tie rate")
     save_figure(fig, path)
 
@@ -437,8 +444,10 @@ def main() -> None:
     scheme_model_path = output_dir / "agreement_weight_scheme_model_gaps.csv"
     reconstruction_path = output_dir / "agreement_weighted_preference_reconstructions.csv"
     global_plot_path = plots_dir / "agreement_bt_global_weights.png"
-    group_plot_path = plots_dir / "agreement_bt_group_weight_heatmaps.png"
-    scheme_plot_path = plots_dir / "agreement_weight_scheme_summary.png"
+    human_heatmap_path = plots_dir / "agreement_bt_human_weight_heatmap.png"
+    delta_heatmap_path = plots_dir / "agreement_bt_weight_delta_heatmap.png"
+    scheme_gap_path = plots_dir / "agreement_weight_scheme_gap_bars.png"
+    scheme_scatter_path = plots_dir / "agreement_weight_scheme_accuracy_fidelity.png"
     scheme_heatmap_path = plots_dir / "agreement_weight_scheme_model_heatmap.png"
     summary_json_path = output_dir / "agreement_bt_reconstruction_summary.json"
 
@@ -457,14 +466,21 @@ def main() -> None:
             else []
         )
         group_order = [group for group in group_order if group in set(human_bt_by_group["group"])]
-        save_language_weight_heatmaps(
+        save_human_weight_heatmap(
+            group_order,
+            dimension_names,
+            human_bt_by_group,
+            human_heatmap_path,
+        )
+        save_weight_delta_heatmap(
             group_order,
             dimension_names,
             human_bt_by_group,
             judge_bt_by_group,
-            group_plot_path,
+            delta_heatmap_path,
         )
-    save_scheme_summary_plot(weight_scheme_summary, scheme_plot_path)
+    save_scheme_gap_bars(weight_scheme_summary, scheme_gap_path)
+    save_accuracy_fidelity_scatter(weight_scheme_summary, scheme_scatter_path)
     save_scheme_model_heatmap(
         weight_scheme_summary,
         weight_scheme_model_gaps,
@@ -498,8 +514,10 @@ def main() -> None:
     print(f"Saved: {reconstruction_path}")
     print(f"Saved: {global_plot_path}")
     if not human_bt_by_group.empty and not judge_bt_by_group.empty:
-        print(f"Saved: {group_plot_path}")
-    print(f"Saved: {scheme_plot_path}")
+        print(f"Saved: {human_heatmap_path}")
+        print(f"Saved: {delta_heatmap_path}")
+    print(f"Saved: {scheme_gap_path}")
+    print(f"Saved: {scheme_scatter_path}")
     print(f"Saved: {scheme_heatmap_path}")
     print(f"Saved: {summary_json_path}")
 

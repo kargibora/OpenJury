@@ -32,7 +32,43 @@ from agreement_analysis_common import (
 apply_plot_theme()
 
 
-def save_language_dashboard(
+def save_language_gap_bars(
+    summary: pd.DataFrame,
+    path: Path,
+    *,
+    top_languages: int,
+) -> None:
+    plot_df = summary.head(top_languages).sort_values("mean_abs_centered_gap")
+
+    acc_min = plot_df["accuracy"].min()
+    acc_span = max(plot_df["accuracy"].max() - acc_min, 1e-9)
+    colors = plt.cm.YlGnBu(0.28 + 0.62 * (plot_df["accuracy"] - acc_min) / acc_span)
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.barh(
+        plot_df["lang"],
+        plot_df["mean_abs_centered_gap"],
+        color=colors,
+        edgecolor="#ffffff",
+        linewidth=1.0,
+    )
+    style_axes(ax, grid_axis="x")
+    ax.set_title("Languages Ranked by Mean Centered Elo Gap", pad=14, loc="left")
+    ax.set_xlabel("Mean |centered judge Elo - centered human Elo|")
+    ax.set_ylabel("Language")
+    ax.set_xlim(0, plot_df["mean_abs_centered_gap"].max() * 1.2)
+    ax.text(
+        0.0,
+        1.02,
+        "Color encodes agreement with humans.",
+        transform=ax.transAxes,
+        fontsize=9,
+        color=COLORS["muted"],
+    )
+    save_figure(fig, path)
+
+
+def save_tie_rate_scatter(
     summary: pd.DataFrame,
     path: Path,
     *,
@@ -44,39 +80,8 @@ def save_language_dashboard(
     size_span = max(float(size_scale.max()) - size_min, 1e-9)
     bubble_sizes = 120 + 300 * ((size_scale - size_min) / size_span)
 
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(16.2, 7.0),
-        gridspec_kw={"width_ratios": [1.05, 1.0]},
-    )
-
-    acc_min = plot_df["accuracy"].min()
-    acc_span = max(plot_df["accuracy"].max() - acc_min, 1e-9)
-    colors = plt.cm.YlGnBu(0.28 + 0.62 * (plot_df["accuracy"] - acc_min) / acc_span)
-
-    axes[0].barh(
-        plot_df["lang"],
-        plot_df["mean_abs_centered_gap"],
-        color=colors,
-        edgecolor="#ffffff",
-        linewidth=1.0,
-    )
-    style_axes(axes[0], grid_axis="x")
-    axes[0].set_title("Languages Ranked by Mean Centered Elo Gap", pad=14, loc="left")
-    axes[0].set_xlabel("Mean |centered judge Elo - centered human Elo|")
-    axes[0].set_ylabel("Language")
-    axes[0].set_xlim(0, plot_df["mean_abs_centered_gap"].max() * 1.2)
-    axes[0].text(
-        0.0,
-        1.02,
-        "Color encodes agreement with humans.",
-        transform=axes[0].transAxes,
-        fontsize=9,
-        color=COLORS["muted"],
-    )
-
-    sc = axes[1].scatter(
+    fig, ax = plt.subplots(figsize=(9, 7))
+    sc = ax.scatter(
         plot_df["human_tie_rate"],
         plot_df["judge_tie_rate"],
         s=bubble_sizes,
@@ -86,11 +91,11 @@ def save_language_dashboard(
         edgecolor="#ffffff",
         linewidth=0.8,
     )
-    style_axes(axes[1], grid_axis="both")
+    style_axes(ax, grid_axis="both")
     lo = min(plot_df["human_tie_rate"].min(), plot_df["judge_tie_rate"].min())
     hi = max(plot_df["human_tie_rate"].max(), plot_df["judge_tie_rate"].max())
     pad = max((hi - lo) * 0.08, 0.01)
-    axes[1].plot(
+    ax.plot(
         [lo, hi],
         [lo, hi],
         linestyle="--",
@@ -104,7 +109,7 @@ def save_language_dashboard(
         .head(min(6, len(plot_df)))
     )
     for _, row in label_df.iterrows():
-        axes[1].annotate(
+        ax.annotate(
             str(row["lang"]),
             (row["human_tie_rate"], row["judge_tie_rate"]),
             xytext=(6, 5),
@@ -117,14 +122,14 @@ def save_language_dashboard(
                 "alpha": 0.88,
             },
         )
-    axes[1].set_title("Human Tie Rate vs Judge Tie Rate", pad=14, loc="left")
-    axes[1].set_xlabel("Human tie rate")
-    axes[1].set_ylabel("Judge tie rate")
-    axes[1].set_xlim(lo - pad, hi + pad)
-    axes[1].set_ylim(lo - pad, hi + pad)
-    format_percent_axis(axes[1], axis="x")
-    format_percent_axis(axes[1], axis="y")
-    cb = plt.colorbar(sc, ax=axes[1], pad=0.02)
+    ax.set_title("Human Tie Rate vs Judge Tie Rate", pad=14, loc="left")
+    ax.set_xlabel("Human tie rate")
+    ax.set_ylabel("Judge tie rate")
+    ax.set_xlim(lo - pad, hi + pad)
+    ax.set_ylim(lo - pad, hi + pad)
+    format_percent_axis(ax, axis="x")
+    format_percent_axis(ax, axis="y")
+    cb = plt.colorbar(sc, ax=ax, pad=0.02)
     cb.set_label("Mean absolute centered Elo gap")
     save_figure(fig, path)
 
@@ -178,12 +183,52 @@ def save_language_model_heatmap(
     save_figure(fig, path)
 
 
-def save_tie_and_stability_dashboard(
+def save_tie_explanation_plot(
     language_summary: pd.DataFrame,
-    language_model_gaps: pd.DataFrame,
     path: Path,
     *,
     top_languages: int,
+) -> None:
+    plot_df = language_summary.head(top_languages).sort_values("mean_abs_centered_gap")
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    y = np.arange(len(plot_df))
+    style_axes(ax, grid_axis="x")
+    ax.hlines(
+        y,
+        plot_df["mean_abs_centered_gap_decisive"],
+        plot_df["mean_abs_centered_gap"],
+        color=COLORS["band"],
+        linewidth=3.0,
+    )
+    ax.plot(
+        plot_df["mean_abs_centered_gap"],
+        y,
+        marker="o",
+        color=COLORS["judge"],
+        linewidth=2,
+        label="All valid pairs",
+    )
+    ax.plot(
+        plot_df["mean_abs_centered_gap_decisive"],
+        y,
+        marker="D",
+        color=COLORS["human"],
+        linewidth=2,
+        label="Decisive-only pairs",
+    )
+    ax.set_yticks(y)
+    ax.set_yticklabels(plot_df["lang"])
+    ax.set_title("How Much Do Ties Explain the Gap?", pad=14, loc="left")
+    ax.set_xlabel("Mean |centered Elo gap|")
+    ax.legend(frameon=False, loc="lower right")
+    save_figure(fig, path)
+
+
+def save_model_drift_plot(
+    language_model_gaps: pd.DataFrame,
+    path: Path,
+    *,
     top_models: int,
 ) -> pd.DataFrame:
     model_language_stability = (
@@ -197,60 +242,22 @@ def save_tie_and_stability_dashboard(
         .reset_index(drop=True)
     )
 
-    plot_df = language_summary.head(top_languages).sort_values("mean_abs_centered_gap")
     stability_plot = model_language_stability.head(top_models).sort_values("std_lang_gap")
 
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(16.2, 7.0),
-        gridspec_kw={"width_ratios": [1.0, 1.0]},
-    )
-
-    y = np.arange(len(plot_df))
-    style_axes(axes[0], grid_axis="x")
-    axes[0].hlines(
-        y,
-        plot_df["mean_abs_centered_gap_decisive"],
-        plot_df["mean_abs_centered_gap"],
-        color=COLORS["band"],
-        linewidth=3.0,
-    )
-    axes[0].plot(
-        plot_df["mean_abs_centered_gap"],
-        y,
-        marker="o",
-        color=COLORS["judge"],
-        linewidth=2,
-        label="All valid pairs",
-    )
-    axes[0].plot(
-        plot_df["mean_abs_centered_gap_decisive"],
-        y,
-        marker="D",
-        color=COLORS["human"],
-        linewidth=2,
-        label="Decisive-only pairs",
-    )
-    axes[0].set_yticks(y)
-    axes[0].set_yticklabels(plot_df["lang"])
-    axes[0].set_title("How Much Do Ties Explain the Gap?", pad=14, loc="left")
-    axes[0].set_xlabel("Mean |centered Elo gap|")
-    axes[0].legend(frameon=False, loc="lower right")
-
+    fig, ax = plt.subplots(figsize=(9, 7))
     bar_colors = plt.cm.OrRd(
         np.linspace(0.42, 0.82, max(len(stability_plot), 1))
     )
-    axes[1].barh(
+    ax.barh(
         stability_plot["short_model"],
         stability_plot["std_lang_gap"],
         color=bar_colors,
         edgecolor="#ffffff",
         linewidth=1.0,
     )
-    style_axes(axes[1], grid_axis="x")
+    style_axes(ax, grid_axis="x")
     for _, row in stability_plot.iterrows():
-        axes[1].text(
+        ax.text(
             row["std_lang_gap"] + 0.6,
             row["short_model"],
             f"{row['std_lang_gap']:.1f}",
@@ -258,10 +265,10 @@ def save_tie_and_stability_dashboard(
             fontsize=8.5,
             color=COLORS["muted"],
         )
-    axes[1].set_title("Models with the Largest Cross-Language Gap Drift", pad=14, loc="left")
-    axes[1].set_xlabel("Std. dev. of centered Elo gap across languages")
-    axes[1].set_ylabel("Model")
-    axes[1].set_xlim(0, stability_plot["std_lang_gap"].max() * 1.18)
+    ax.set_title("Models with the Largest Cross-Language Gap Drift", pad=14, loc="left")
+    ax.set_xlabel("Std. dev. of centered Elo gap across languages")
+    ax.set_ylabel("Model")
+    ax.set_xlim(0, stability_plot["std_lang_gap"].max() * 1.18)
     save_figure(fig, path)
     return model_language_stability
 
@@ -346,16 +353,23 @@ def main() -> None:
     language_summary_path = output_dir / "agreement_language_gap_summary.csv"
     language_model_gap_path = output_dir / "agreement_language_model_centered_gaps.csv"
     stability_path = output_dir / "agreement_model_language_gap_stability.csv"
-    dashboard_path = plots_dir / "agreement_language_gap_dashboard.png"
+    gap_bars_path = plots_dir / "agreement_language_gap_bars.png"
+    tie_scatter_path = plots_dir / "agreement_language_tie_scatter.png"
     heatmap_path = plots_dir / "agreement_language_model_gap_heatmap.png"
-    tie_stability_path = plots_dir / "agreement_language_ties_and_stability.png"
+    tie_explain_path = plots_dir / "agreement_language_tie_explanation.png"
+    model_drift_path = plots_dir / "agreement_language_model_drift.png"
     summary_json_path = output_dir / "agreement_multilingual_analysis_summary.json"
 
     language_summary.to_csv(language_summary_path, index=False)
     language_model_gaps.to_csv(language_model_gap_path, index=False)
-    save_language_dashboard(
+    save_language_gap_bars(
         language_summary,
-        dashboard_path,
+        gap_bars_path,
+        top_languages=args.top_languages,
+    )
+    save_tie_rate_scatter(
+        language_summary,
+        tie_scatter_path,
         top_languages=args.top_languages,
     )
     save_language_model_heatmap(
@@ -364,11 +378,14 @@ def main() -> None:
         heatmap_path,
         top_models=args.top_models,
     )
-    model_language_stability = save_tie_and_stability_dashboard(
+    save_tie_explanation_plot(
         language_summary,
-        language_model_gaps,
-        tie_stability_path,
+        tie_explain_path,
         top_languages=min(14, args.top_languages),
+    )
+    model_language_stability = save_model_drift_plot(
+        language_model_gaps,
+        model_drift_path,
         top_models=min(18, args.top_models),
     )
     model_language_stability.to_csv(stability_path, index=False)
@@ -394,9 +411,11 @@ def main() -> None:
     print(f"Saved: {language_summary_path}")
     print(f"Saved: {language_model_gap_path}")
     print(f"Saved: {stability_path}")
-    print(f"Saved: {dashboard_path}")
+    print(f"Saved: {gap_bars_path}")
+    print(f"Saved: {tie_scatter_path}")
     print(f"Saved: {heatmap_path}")
-    print(f"Saved: {tie_stability_path}")
+    print(f"Saved: {tie_explain_path}")
+    print(f"Saved: {model_drift_path}")
     print(f"Saved: {summary_json_path}")
 
 

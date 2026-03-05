@@ -192,39 +192,32 @@ def save_weight_profile_plot(
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Plot 2 — Alignment Uplift: grouped metric bars with deltas
+#  Plot 2a — Agreement Bars (single panel)
 # ═══════════════════════════════════════════════════════════════════
 
 
-def save_alignment_uplift_plot(
+def save_agreement_bars_plot(
     scheme_summary: pd.DataFrame,
     path: Path,
 ) -> None:
-    """Side-by-side bars for accuracy & Elo gap with delta annotations."""
+    """Single-panel bar chart of 3-class agreement with humans."""
     df = scheme_summary.copy().set_index("scheme")
     schemes = [s for s in SCHEME_SHORT if s in df.index]
     if not schemes:
         return
 
-    fig, axes = plt.subplots(
-        1, 2, figsize=(11.5, 4.6), gridspec_kw={"wspace": 0.35}
-    )
-    fig.subplots_adjust(top=0.80, bottom=0.22, left=0.08, right=0.97)
-    add_figure_header(
-        fig,
-        title="Does Human-Calibrated Weighting Help?",
-        subtitle=(
-            "Comparing uniform-average judge decisions "
-            "vs BT-reweighted preferences"
-        ),
-    )
-
     short = [_ss(s) for s in schemes]
     colors = [_sc(s) for s in schemes]
     x = np.arange(len(schemes))
 
-    # ── Left: Agreement with humans ──
-    ax = axes[0]
+    fig, ax = plt.subplots(figsize=(6.5, 4.6))
+    fig.subplots_adjust(top=0.82, bottom=0.14, left=0.09, right=0.96)
+    add_figure_header(
+        fig,
+        title="Agreement with Humans",
+        subtitle="3-class accuracy: uniform-average vs BT-reweighted preferences",
+    )
+
     accs = [float(df.loc[s, "accuracy_vs_human"]) for s in schemes]
     bars = ax.bar(
         x, accs, 0.52, color=colors, edgecolor="#fff", linewidth=1, zorder=3
@@ -242,12 +235,39 @@ def save_alignment_uplift_plot(
     ax.set_ylabel("3-class agreement")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
     ax.set_ylim(0, max(accs) * 1.18)
-    ax.set_title(
-        "Agreement with humans ↑", fontsize=11, pad=10, loc="left", color=COLORS["text"]
+
+    n = int(df["n_samples"].iloc[0])
+    add_figure_caption(fig, left="", right=f"n = {n:,} pairwise comparisons")
+    save_figure(fig, path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Plot 2b — Elo Gap Bars (single panel)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def save_elo_gap_bars_plot(
+    scheme_summary: pd.DataFrame,
+    path: Path,
+) -> None:
+    """Single-panel bar chart of mean |centered Elo gap| vs humans."""
+    df = scheme_summary.copy().set_index("scheme")
+    schemes = [s for s in SCHEME_SHORT if s in df.index]
+    if not schemes:
+        return
+
+    short = [_ss(s) for s in schemes]
+    colors = [_sc(s) for s in schemes]
+    x = np.arange(len(schemes))
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.6))
+    fig.subplots_adjust(top=0.82, bottom=0.14, left=0.09, right=0.96)
+    add_figure_header(
+        fig,
+        title="Ranking Gap vs Humans",
+        subtitle="Mean |centered Elo gap| by preference-derivation scheme",
     )
 
-    # ── Right: Mean Elo gap (lower = better) ──
-    ax = axes[1]
     gaps = [float(df.loc[s, "mean_abs_centered_gap"]) for s in schemes]
     bars = ax.bar(
         x, gaps, 0.52, color=colors, edgecolor="#fff", linewidth=1, zorder=3
@@ -264,9 +284,6 @@ def save_alignment_uplift_plot(
     ax.set_xticklabels(short, fontsize=9)
     ax.set_ylabel("Mean |centered Elo gap|")
     ax.set_ylim(0, max(gaps) * 1.18)
-    ax.set_title(
-        "Ranking gap vs humans ↓", fontsize=11, pad=10, loc="left", color=COLORS["text"]
-    )
 
     n = int(df["n_samples"].iloc[0])
     add_figure_caption(fig, left="", right=f"n = {n:,} pairwise comparisons")
@@ -433,154 +450,32 @@ def save_model_heatmap(
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Plot 5 — 4-Panel Summary Dashboard
+#  Plot 5 — Spearman Ranking Correlation Bars (single panel)
 # ═══════════════════════════════════════════════════════════════════
 
 
-def save_dashboard_plot(
+def save_spearman_bars_plot(
     scheme_summary: pd.DataFrame,
-    dimension_names: list[str],
-    global_weights: dict[str, float],
     path: Path,
 ) -> None:
-    """Compact 2×2 summary card."""
+    """Single-panel bar chart of Spearman ρ for each scheme."""
     df = scheme_summary.copy().set_index("scheme")
     schemes = [s for s in SCHEME_SHORT if s in df.index]
     if not schemes:
         return
 
-    fig = plt.figure(figsize=(14, 8.5))
-    fig.subplots_adjust(top=0.88, bottom=0.08, hspace=0.42, wspace=0.30)
-    add_figure_header(
-        fig,
-        title="BT Reconstruction — Summary Dashboard",
-        subtitle=(
-            "Effect of human-calibrated rubric weighting "
-            "on LLM judge alignment"
-        ),
-    )
-
-    gs = fig.add_gridspec(2, 2, left=0.07, right=0.96, top=0.82, bottom=0.10)
-
     short = [_ss(s) for s in schemes]
     colors = [_sc(s) for s in schemes]
+    x = np.arange(len(schemes))
 
-    # ── Panel A: Agreement ──
-    ax = fig.add_subplot(gs[0, 0])
-    accs = [float(df.loc[s, "accuracy_vs_human"]) for s in schemes]
-    bars = ax.bar(
-        range(len(schemes)),
-        accs,
-        0.55,
-        color=colors,
-        edgecolor="#fff",
-        lw=1,
-        zorder=3,
-    )
-    for bar, val in zip(bars, accs):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.005,
-            _pct(val),
-            ha="center",
-            va="bottom",
-            fontsize=9,
-            fontweight="semibold",
-        )
-    ax.set_xticks(range(len(schemes)))
-    ax.set_xticklabels(short, fontsize=8.5)
-    ax.set_ylabel("Agreement")
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
-    ax.set_ylim(0, max(accs) * 1.16)
-    style_axes(ax, grid_axis="y")
-    ax.set_title(
-        "A   Human Agreement ↑",
-        loc="left",
-        fontsize=10.5,
-        fontweight="semibold",
+    fig, ax = plt.subplots(figsize=(6.5, 4.6))
+    fig.subplots_adjust(top=0.82, bottom=0.14, left=0.09, right=0.96)
+    add_figure_header(
+        fig,
+        title="Ranking Correlation with Humans",
+        subtitle="Spearman ρ between scheme Elo and human Elo rankings",
     )
 
-    # ── Panel B: Mean Elo Gap ──
-    ax = fig.add_subplot(gs[0, 1])
-    gaps = [float(df.loc[s, "mean_abs_centered_gap"]) for s in schemes]
-    bars = ax.bar(
-        range(len(schemes)),
-        gaps,
-        0.55,
-        color=colors,
-        edgecolor="#fff",
-        lw=1,
-        zorder=3,
-    )
-    for bar, val in zip(bars, gaps):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.5,
-            f"{val:.1f}",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-            fontweight="semibold",
-        )
-    ax.set_xticks(range(len(schemes)))
-    ax.set_xticklabels(short, fontsize=8.5)
-    ax.set_ylabel("Mean |ΔElo| vs humans")
-    ax.set_ylim(0, max(gaps) * 1.18)
-    style_axes(ax, grid_axis="y")
-    ax.set_title(
-        "B   Elo Gap ↓", loc="left", fontsize=10.5, fontweight="semibold"
-    )
-
-    # ── Panel C: Weight Profile ──
-    ax = fig.add_subplot(gs[1, 0])
-    k = len(dimension_names)
-    uniform_w = 1.0 / k
-    norm_g = normalized_weight_dict(global_weights)
-    dims_cap = [d.capitalize() for d in dimension_names]
-    xd = np.arange(k)
-    bwd = 0.35
-    ax.bar(
-        xd - bwd / 2,
-        [uniform_w] * k,
-        bwd,
-        color=C_OBSERVED,
-        edgecolor="#fff",
-        lw=0.8,
-        label="Uniform",
-        zorder=3,
-    )
-    ax.bar(
-        xd + bwd / 2,
-        [norm_g.get(d, 0) for d in dimension_names],
-        bwd,
-        color=C_GLOBAL,
-        edgecolor="#fff",
-        lw=0.8,
-        label="BT (human-fitted)",
-        zorder=3,
-    )
-    ax.axhline(uniform_w, ls=":", color=COLORS["muted"], lw=0.8)
-    ax.set_xticks(xd)
-    ax.set_xticklabels(dims_cap, fontsize=8.5)
-    ax.set_ylabel("Normalised weight")
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0, decimals=0))
-    style_axes(ax, grid_axis="y")
-    ax.legend(
-        fontsize=8,
-        loc="upper right",
-        frameon=True,
-        facecolor="#fff",
-        edgecolor=COLORS["band"],
-    )
-    ax.set_title(
-        "C   Learned Weights",
-        loc="left",
-        fontsize=10.5,
-        fontweight="semibold",
-    )
-
-    # ── Panel D: Spearman ranking correlation ──
-    ax = fig.add_subplot(gs[1, 1])
     spearman_vals = [
         float(df.loc[s, "spearman_human_vs_scheme_elo"])
         if pd.notna(df.loc[s, "spearman_human_vs_scheme_elo"])
@@ -588,12 +483,12 @@ def save_dashboard_plot(
         for s in schemes
     ]
     bars = ax.bar(
-        range(len(schemes)),
+        x,
         spearman_vals,
-        0.55,
+        0.52,
         color=colors,
         edgecolor="#fff",
-        lw=1,
+        linewidth=1,
         zorder=3,
     )
     for bar, val in zip(bars, spearman_vals):
@@ -601,19 +496,13 @@ def save_dashboard_plot(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.008,
             f"{val:.3f}",
-            ha="center", va="bottom", fontsize=9, fontweight="semibold",
+            ha="center", va="bottom", fontsize=9.5, fontweight="semibold",
         )
-    ax.set_xticks(range(len(schemes)))
-    ax.set_xticklabels(short, fontsize=8.5)
+    style_axes(ax, grid_axis="y")
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, fontsize=9)
     ax.set_ylabel("Spearman ρ")
     ax.set_ylim(0, 1.05)
-    style_axes(ax, grid_axis="y")
-    ax.set_title(
-        "D   Ranking Correlation ↑",
-        loc="left",
-        fontsize=10.5,
-        fontweight="semibold",
-    )
 
     n = int(df["n_samples"].iloc[0])
     add_figure_caption(fig, left="", right=f"n = {n:,} pairwise comparisons")
@@ -947,9 +836,13 @@ def main() -> None:
         human_bt_by_group,
         plots_dir / "agreement_bt_human_model_weight_profile.pdf",
     )
-    save_alignment_uplift_plot(
+    save_agreement_bars_plot(
         scheme_summary,
-        plots_dir / "agreement_bt_human_model_alignment_uplift.pdf",
+        plots_dir / "agreement_bt_human_model_agreement_bars.pdf",
+    )
+    save_elo_gap_bars_plot(
+        scheme_summary,
+        plots_dir / "agreement_bt_human_model_elo_gap_bars.pdf",
     )
     save_elo_scatter_plot(
         scheme_model_gaps,
@@ -961,11 +854,9 @@ def main() -> None:
         plots_dir / "agreement_bt_human_model_scheme_heatmap.pdf",
         top_models=args.top_models,
     )
-    save_dashboard_plot(
+    save_spearman_bars_plot(
         scheme_summary,
-        dimension_names,
-        human_bt_global["weights"],
-        plots_dir / "agreement_bt_human_model_dashboard.pdf",
+        plots_dir / "agreement_bt_human_model_spearman_bars.pdf",
     )
 
     # ── JSON summary ───────────────────────────────────────────────
