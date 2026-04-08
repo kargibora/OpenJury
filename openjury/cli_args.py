@@ -127,7 +127,8 @@ def add_dataset_selection_args(parser: argparse.ArgumentParser) -> None:
         "--balance_by",
         default=None,
         help=(
-            "Balanced sub-sampling metadata field (e.g. 'lang'). When set with "
+            "Balanced sub-sampling field (e.g. 'lang', 'model_a', 'model_b', "
+            "or 'models' for pairwise datasets). When set with "
             "--n_instructions, the loader samples approximately uniformly across "
             "field values and redistributes deficits automatically."
         ),
@@ -225,6 +226,26 @@ def add_judge_args(parser: argparse.ArgumentParser) -> None:
             "the request body.  Example: "
             "--gen-kwargs temperature=0.7 top_p=0.9 top_k=50 "
             "repetition_penalty=1.05"
+        ),
+    )
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        default=None,
+        help=(
+            "Maximum sequence length (context window) for VLLM/SGLang models. "
+            "None = use the model's default. Lower values reduce GPU memory "
+            "usage significantly (e.g. 16384 instead of 65536)."
+        ),
+    )
+    parser.add_argument(
+        "--enforce_eager",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable CUDA graph capture for VLLM models. Saves GPU memory "
+            "at the cost of slightly slower inference. Useful when hitting "
+            "OOM during CUDA graph warmup."
         ),
     )
     parser.add_argument(

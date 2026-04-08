@@ -101,6 +101,73 @@ def do_inference(
     return [x.content if hasattr(x, "content") else str(x) for x in results]
 
 
+def do_inference_multi(
+    chat_model: Any,
+    inputs: list[Any],
+    n: int = 1,
+    use_tqdm: bool = False,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+    batch_size: int | None = None,
+    force_async: bool = False,
+) -> list[list[str]]:
+    """Run inference returning *n* completions per input.
+
+    When ``n == 1`` this is equivalent to ``do_inference`` but always returns
+    ``list[list[str]]`` (each inner list has length 1).
+
+    For local backends that support ``n > 1`` via ``batch_multi()`` (e.g.
+    vLLM ``SamplingParams(n=K)``), the heavy prompt encoding is done once
+    per input — only the decode phase is replicated, making this much
+    cheaper than calling ``do_inference`` K times.
+
+    For async/API backends, falls back to sending the same prompt K times.
+
+    Args:
+        chat_model: Model backend.
+        inputs: Prompts / chat messages.
+        n: Number of completions per input.
+        use_tqdm: Progress bar.
+        max_retries: Retry budget.
+        base_delay: Backoff base.
+        batch_size: Chunk size for batch path.
+        force_async: Use async path.
+
+    Returns:
+        ``list[list[str]]`` — outer list aligned with *inputs*, inner list
+        of length *n*.
+    """
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+
+    if n == 1:
+        single = do_inference(
+            chat_model, inputs,
+            use_tqdm=use_tqdm, max_retries=max_retries,
+            base_delay=base_delay, batch_size=batch_size,
+            force_async=force_async,
+        )
+        return [[s] for s in single]
+
+    # ── n > 1: try native batch_multi first (vLLM) ──────────────
+    if not force_async and hasattr(chat_model, "batch_multi"):
+        raw = _batch_inference_multi(
+            chat_model, inputs, n, max_retries, base_delay, use_tqdm, batch_size,
+        )
+        return raw
+
+    # ── Fallback: repeat each prompt n times and de-interleave ───
+    expanded = [inp for inp in inputs for _ in range(n)]
+    flat = do_inference(
+        chat_model, expanded,
+        use_tqdm=use_tqdm, max_retries=max_retries,
+        base_delay=base_delay, batch_size=batch_size,
+        force_async=force_async,
+    )
+    # De-interleave: [a1, a2, a3, b1, b2, b3, ...] → [[a1,a2,a3], [b1,b2,b3], ...]
+    return [flat[i * n : (i + 1) * n] for i in range(len(inputs))]
+
+
 # ═════════════════════════════════════════════════════════════════════
 #  Async path — for API-based models
 # ═════════════════════════════════════════════════════════════════════
@@ -240,3 +307,56 @@ def _batch_with_retry(
             time.sleep(delay)
 
     raise RuntimeError("Inference failed after all retries")
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Multi-completion batch path — for n > 1 (Average-of-K)
+# ═════════════════════════════════════════════════════════════════════
+
+
+def _batch_inference_multi(
+    chat_model: Any,
+    inputs: list[Any],
+    n: int,
+    max_retries: int,
+    base_delay: float,
+    use_tqdm: bool = False,
+    batch_size: int | None = None,
+) -> list[list[str]]:
+    """Batch inference returning *n* completions per input via ``batch_multi()``.
+
+    Delegates to the backend's ``batch_multi(inputs, n)`` method which
+    exploits vLLM's ``SamplingParams(n=K)`` — the prompt is encoded once
+    and K decode passes run in parallel.
+    """
+    if batch_size and batch_size < len(inputs):
+        chunks = [inputs[i : i + batch_size] for i in range(0, len(inputs), batch_size)]
+    else:
+        chunks = [inputs]
+
+    results: list[list[str]] = []
+    pbar = sync_tqdm(total=len(inputs), desc=f"Inference (batch, n={n})") if use_tqdm else None
+
+    try:
+        for chunk in chunks:
+            for attempt in range(max_retries):
+                try:
+                    chunk_results = chat_model.batch_multi(inputs=chunk, n=n)
+                    results.extend(chunk_results)
+                    if pbar is not None:
+                        pbar.update(len(chunk_results))
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1 or not _is_retryable_error(e):
+                        raise
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Batch-multi retry %d/%d: %s. Waiting %.1fs...",
+                        attempt + 1, max_retries, e, delay,
+                    )
+                    time.sleep(delay)
+    finally:
+        if pbar is not None:
+            pbar.close()
+
+    return results

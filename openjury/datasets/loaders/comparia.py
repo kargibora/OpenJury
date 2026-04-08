@@ -72,7 +72,7 @@ def load_comparia(
 
             df["_lang"] = df["conversation_a"].apply(
                 lambda c: detect_language(c[0]["content"]).lower()
-                if c else ""
+                if len(c) > 0 else ""
             )
             before = len(df)
             df = df[df["_lang"] == language]
@@ -94,7 +94,7 @@ def load_comparia(
     for row_idx, (_, row) in enumerate(df.iterrows()):
         conv_a = row.get("conversation_a", [])
         conv_b = row.get("conversation_b", [])
-        instruction = conv_a[0]["content"] if conv_a else ""
+        instruction = conv_a[0]["content"] if len(conv_a) > 0 else ""
         comp_a = conv_a[1]["content"] if len(conv_a) > 1 else ""
         comp_b = conv_b[1]["content"] if len(conv_b) > 1 else ""
 
@@ -102,6 +102,11 @@ def load_comparia(
         model_b_name = str(row.get("model_b_name", ""))
         chosen = row.get("chosen_model_name")
         both_equal = row.get("both_equal", False)
+        # both_equal may be a numpy scalar/array — coerce to plain bool
+        if isinstance(both_equal, (np.ndarray, np.generic)):
+            both_equal = bool(np.any(both_equal))
+        else:
+            both_equal = bool(both_equal)
 
         if both_equal or chosen is None or (isinstance(chosen, float) and np.isnan(chosen)):
             pref = 0.5

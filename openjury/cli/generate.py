@@ -28,7 +28,6 @@ from openjury.cache.completions import cache
 from openjury.datasets import load_dataset
 from openjury.generate_config import GenerateConfig
 from openjury.pipelines.generation import generate_instructions, generate_base
-from openjury.models.factory import build_config_for_model
 
 
 def _run_generate_local(cfg: GenerateConfig) -> None:
@@ -36,11 +35,13 @@ def _run_generate_local(cfg: GenerateConfig) -> None:
     output_path = Path(cfg.output)
     ds_opts = cfg.dataset_options
     cache_dataset = ds_opts.cache_key()
+    model_entry = cfg.model_entry
+    runtime = cfg.runtime
 
     # ── Check completion cache first ─────────────────────────────
-    if not cfg.ignore_cache:
+    if not runtime.ignore_cache:
         cached_df = cache.get(
-            cfg.model,
+            model_entry.name,
             cache_dataset,
             ds_opts.n_instructions,
         )
@@ -67,36 +68,25 @@ def _run_generate_local(cfg: GenerateConfig) -> None:
 
     logger.info(
         "Generating %d completions with %s (tp=%d)",
-        len(instructions), cfg.model, cfg.tensor_parallel_size,
+        len(instructions), model_entry.name, model_entry.tensor_parallel_size,
     )
 
-    # Build provider-appropriate config (VLLM flags are ignored for API providers)
-    model_cfg = build_config_for_model(
-        cfg.model,
-        max_tokens=cfg.max_tokens,
-        tensor_parallel_size=cfg.tensor_parallel_size,
-        gpu_memory_utilization=cfg.gpu_memory_utilization,
-        quantization=cfg.quantization,
-        gpu_devices=cfg.gpu_devices,
-        chat_template=cfg.chat_template,
-        chat_template_file=cfg.chat_template_file,
-        api_base_url=cfg.api_base_url,
-        api_key_env=cfg.api_key_env,
-    )
+    # Build provider-appropriate config (local/API extras still come from GenerateConfig).
+    model_cfg = cfg.to_model_config()
 
-    gen_fn = generate_base if cfg.base_model else generate_instructions
+    gen_fn = generate_base if runtime.base_model else generate_instructions
     df = gen_fn(
         instructions=instructions,
-        model=cfg.model,
-        truncate_input_chars=cfg.truncate_input_chars,
-        max_tokens=cfg.max_tokens,
-        use_tqdm=cfg.use_tqdm,
+        model=model_entry.name,
+        truncate_input_chars=runtime.truncate_input_chars,
+        max_tokens=model_entry.max_tokens or 4096,
+        use_tqdm=runtime.use_tqdm,
         config=model_cfg,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_path, index=False)
-    cache.put(df, cfg.model, cache_dataset, ds_opts.n_instructions)
+    cache.put(df, model_entry.name, cache_dataset, ds_opts.n_instructions)
     logger.info("Saved %d completions to %s (+ cached)", len(df), output_path)
 
 
@@ -155,6 +145,14 @@ def main(argv: list[str] | None = None):
         "--slurm_output_dir",
         default="slurm_scripts",
         help="With --slurm: root directory for generated SLURM scripts (default: slurm_scripts).",
+    )
+    parser.add_argument(
+        "--slurm_tag",
+        default=None,
+        help=(
+            "With --slurm: explicit run tag used in the generated SLURM run "
+            "directory name. Defaults to an auto-generated timestamp."
+        ),
     )
 
     args = parser.parse_args(argv)

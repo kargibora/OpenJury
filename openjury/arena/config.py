@@ -14,7 +14,7 @@ are produced by the arena pipeline and serialised to ``arena.json``.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,33 @@ from typing import Any
 # ═════════════════════════════════════════════════════════════════════
 #  Input configuration — drives the arena pipeline
 # ═════════════════════════════════════════════════════════════════════
+
+
+def _dataclass_field_default(dc_field) -> Any:
+    """Return the effective default value for a dataclass field."""
+    if dc_field.default is not MISSING:
+        return dc_field.default
+    if dc_field.default_factory is not MISSING:
+        return dc_field.default_factory()
+    return MISSING
+
+
+def _dataclass_kwargs_from_raw(cls, raw: dict[str, Any]) -> dict[str, Any]:
+    """Filter a raw dict down to keys accepted by the dataclass."""
+    field_names = {dc_field.name for dc_field in fields(cls)}
+    return {key: value for key, value in raw.items() if key in field_names}
+
+
+def _dataclass_to_sparse_dict(instance: Any) -> dict[str, Any]:
+    """Serialize a dataclass, omitting fields whose values match defaults."""
+    out: dict[str, Any] = {}
+    for dc_field in fields(instance):
+        value = getattr(instance, dc_field.name)
+        default = _dataclass_field_default(dc_field)
+        if default is not MISSING and value == default:
+            continue
+        out[dc_field.name] = value
+    return out
 
 
 @dataclass
@@ -87,14 +114,15 @@ class ModelEntry:
         if isinstance(raw, str):
             return cls(name=raw)
         if isinstance(raw, dict):
-            known = {
-                "name", "gpus", "tp", "quantization", "completions",
-                "chat_template", "chat_template_file",
-                "max_tokens", "temperature", "top_p", "generation_kwargs",
-            }
-            kw = {k: v for k, v in raw.items() if k in known}
-            return cls(**kw)
+            return cls(**_dataclass_kwargs_from_raw(cls, raw))
         raise TypeError(f"Expected str or dict for model entry, got {type(raw)}")
+
+    def to_dict(self) -> str | dict[str, Any]:
+        """Serialize to a sparse JSON-compatible model entry."""
+        sparse = _dataclass_to_sparse_dict(self)
+        if set(sparse.keys()) == {"name"}:
+            return self.name
+        return sparse
 
     def to_model_config(self):
         """Build a typed :class:`~openjury.models.config.ModelConfig` for this entry.
@@ -151,7 +179,22 @@ class JudgeConfig:
     provide_explanation: bool = False
     no_swap: bool = False           # disable swap debiasing in pairwise mode
     enable_thinking: bool | None = None  # for Qwen3 thinking mode
+    max_model_len: int | None = None   # vLLM/SGLang max sequence length (None = model default)
+    enforce_eager: bool = False        # disable CUDA graphs (saves GPU memory)
+    n_trials: int = 1                  # Average-of-K: run judge K times per sample and aggregate
     generation_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.n_trials < 1:
+            raise ValueError(f"n_trials must be >= 1, got {self.n_trials}")
+        if self.n_trials > 1 and self.temperature == 0.0:
+            import warnings
+            warnings.warn(
+                f"n_trials={self.n_trials} with temperature=0.0 produces identical "
+                f"outputs. Setting n_trials=1. Use temperature > 0 for multi-trial.",
+                stacklevel=2,
+            )
+            object.__setattr__(self, "n_trials", 1)
 
     @property
     def tensor_parallel_size(self) -> int:
@@ -163,20 +206,16 @@ class JudgeConfig:
         if isinstance(raw, str):
             return cls(model=raw)
         if isinstance(raw, dict):
-            known = {
-                "model", "gpus", "tp", "mode", "max_tokens",
-                "temperature", "top_p", "quantization",
-                "chat_template", "chat_template_file",
-                "pairwise_prompt_style",
-                "provide_explanation", "no_swap", "enable_thinking",
-                "generation_kwargs",
-            }
-            kw = {k: v for k, v in raw.items() if k in known}
+            kw = _dataclass_kwargs_from_raw(cls, raw)
             # Normalize legacy "rubric" value → "criteria"
             if kw.get("pairwise_prompt_style") == "rubric":
                 kw["pairwise_prompt_style"] = "criteria"
             return cls(**kw)
         raise TypeError(f"Expected str or dict for judge config, got {type(raw)}")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-serializable dict, omitting default-valued fields."""
+        return _dataclass_to_sparse_dict(self)
 
     def to_model_config(self):
         """Build a typed :class:`~openjury.models.config.ModelConfig` for this judge.
@@ -201,6 +240,9 @@ class JudgeConfig:
             chat_template_file=self.chat_template_file,
             enable_thinking=self.enable_thinking,
             generation_kwargs=self.generation_kwargs or None,
+            # vLLM/SGLang engine-level options (passed via **extra)
+            max_model_len=self.max_model_len,
+            enforce_eager=self.enforce_eager,
         )
 
 
@@ -413,68 +455,7 @@ class ArenaConfig:
     def to_dict(self) -> dict:
         """Serialise to a JSON-serialisable dict."""
         # ── models ───────────────────────────────────────────────
-        models_out = []
-        for m in self.models:
-            if (m.gpus == 1 and not m.quantization
-                    and m.tp is None
-                    and m.completions is None
-                    and not m.chat_template and not m.chat_template_file
-                    and not m.generation_kwargs
-                    and m.max_tokens is None
-                    and m.temperature is None and m.top_p is None):
-                models_out.append(m.name)
-            else:
-                entry: dict[str, Any] = {
-                    "name": m.name,
-                    "gpus": m.gpus,
-                }
-                if m.tp is not None:
-                    entry["tp"] = m.tp
-                if m.quantization:
-                    entry["quantization"] = m.quantization
-                if m.completions is not None:
-                    entry["completions"] = m.completions
-                if m.chat_template is not None:
-                    entry["chat_template"] = m.chat_template
-                if m.chat_template_file is not None:
-                    entry["chat_template_file"] = m.chat_template_file
-                if m.max_tokens is not None:
-                    entry["max_tokens"] = m.max_tokens
-                if m.temperature is not None:
-                    entry["temperature"] = m.temperature
-                if m.top_p is not None:
-                    entry["top_p"] = m.top_p
-                if m.generation_kwargs:
-                    entry["generation_kwargs"] = m.generation_kwargs
-                models_out.append(entry)
-
-        # ── judge ────────────────────────────────────────────────
-        judge_out: dict[str, Any] = {
-            "model": self.judge.model,
-            "gpus": self.judge.gpus,
-            "mode": self.judge.mode,
-            "max_tokens": self.judge.max_tokens,
-            "temperature": self.judge.temperature,
-            "top_p": self.judge.top_p,
-        }
-        if self.judge.tp is not None:
-            judge_out["tp"] = self.judge.tp
-        if self.judge.quantization is not None:
-            judge_out["quantization"] = self.judge.quantization
-        if self.judge.enable_thinking is not None:
-            judge_out["enable_thinking"] = self.judge.enable_thinking
-        if self.judge.chat_template is not None:
-            judge_out["chat_template"] = self.judge.chat_template
-        if self.judge.chat_template_file is not None:
-            judge_out["chat_template_file"] = self.judge.chat_template_file
-        if self.judge.pairwise_prompt_style != "criteria":
-            judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
-        if self.judge.provide_explanation:
-            judge_out["provide_explanation"] = self.judge.provide_explanation
-        if self.judge.no_swap:
-            judge_out["no_swap"] = self.judge.no_swap
-        if self.judge.generation_kwargs:
-            judge_out["generation_kwargs"] = self.judge.generation_kwargs
+        models_out = [m.to_dict() for m in self.models]
 
         return {
             "dataset": self.dataset,
@@ -483,7 +464,7 @@ class ArenaConfig:
             "seed": self.seed,
             "balance_by": self.balance_by,
             "models": models_out,
-            "judge": judge_out,
+            "judge": self.judge.to_dict(),
             "criteria": self.criteria,
             "matchmaker": {
                 "strategy": self.matchmaker.strategy,
@@ -561,6 +542,7 @@ class AgreementConfig:
     # ── Scoring ──────────────────────────────────────────────────
     ignore_score_cache: bool = False
     truncate_instruction: int = 500
+    include_completions: bool = True
 
     @property
     def dataset_options(self):
@@ -618,37 +600,15 @@ class AgreementConfig:
             criteria=data.get("criteria", data.get("rubric", "default")),
             ignore_score_cache=ignore_score_cache,
             truncate_instruction=data.get("truncate_instruction", 500),
+            include_completions=data.get("include_completions", True),
         )
 
     def to_dict(self) -> dict:
         """Serialise to a JSON-serialisable dict."""
-        judge_out: dict[str, Any] = {
-            "model": self.judge.model,
-            "gpus": self.judge.gpus,
-            "mode": self.judge.mode,
-            "max_tokens": self.judge.max_tokens,
-            "temperature": self.judge.temperature,
-            "top_p": self.judge.top_p,
-        }
-        if self.judge.enable_thinking is not None:
-            judge_out["enable_thinking"] = self.judge.enable_thinking
-        if self.judge.chat_template is not None:
-            judge_out["chat_template"] = self.judge.chat_template
-        if self.judge.chat_template_file is not None:
-            judge_out["chat_template_file"] = self.judge.chat_template_file
-        if self.judge.pairwise_prompt_style != "criteria":
-            judge_out["pairwise_prompt_style"] = self.judge.pairwise_prompt_style
-        if self.judge.generation_kwargs:
-            judge_out["generation_kwargs"] = self.judge.generation_kwargs
-        if self.judge.provide_explanation:
-            judge_out["provide_explanation"] = True
-        if self.judge.no_swap:
-            judge_out["no_swap"] = True
-
         return {
             "dataset": self.dataset,
             "n_instructions": self.n_instructions,
-            "judge": judge_out,
+            "judge": self.judge.to_dict(),
             "criteria": self.criteria,
             "generation": {
                 "ignore_score_cache": self.ignore_score_cache,
@@ -657,6 +617,7 @@ class AgreementConfig:
             "language": self.language,
             "seed": self.seed,
             "balance_by": self.balance_by,
+            "include_completions": self.include_completions,
         }
 
     def save(self, path: str | Path) -> None:
@@ -716,10 +677,18 @@ class MatchResult:
     instruction: str = ""
     instruction_id: str = ""
     instruction_metadata: dict[str, Any] = field(default_factory=dict)
+    human_preference: float | None = None
     completion_a: str = ""
     completion_b: str = ""
     raw_judge_output: str = ""
     raw_judge_output_swapped: str | None = None
+    # ── Per-swap position scores (before averaging) ────────────
+    scores_a_original: dict[str, float] | None = None
+    scores_b_original: dict[str, float] | None = None
+    preference_original: float | None = None
+    scores_a_swapped: dict[str, float] | None = None
+    scores_b_swapped: dict[str, float] | None = None
+    preference_swapped: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -736,6 +705,8 @@ class MatchResult:
             d["instruction_id"] = self.instruction_id
         if self.instruction_metadata:
             d["instruction_metadata"] = self.instruction_metadata
+        if self.human_preference is not None:
+            d["human_preference"] = self.human_preference
         if self.completion_a:
             d["completion_a"] = self.completion_a
         if self.completion_b:
@@ -744,6 +715,19 @@ class MatchResult:
             d["raw_judge_output"] = self.raw_judge_output
         if self.raw_judge_output_swapped is not None:
             d["raw_judge_output_swapped"] = self.raw_judge_output_swapped
+        # ── Per-swap position scores ─────────────────────────────
+        if self.scores_a_original is not None:
+            d["scores_a_original"] = self.scores_a_original
+        if self.scores_b_original is not None:
+            d["scores_b_original"] = self.scores_b_original
+        if self.preference_original is not None:
+            d["preference_original"] = self.preference_original
+        if self.scores_a_swapped is not None:
+            d["scores_a_swapped"] = self.scores_a_swapped
+        if self.scores_b_swapped is not None:
+            d["scores_b_swapped"] = self.scores_b_swapped
+        if self.preference_swapped is not None:
+            d["preference_swapped"] = self.preference_swapped
         return d
 
 

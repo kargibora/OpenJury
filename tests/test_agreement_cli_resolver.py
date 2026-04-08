@@ -37,6 +37,8 @@ def test_agreement_resolver_config_plus_explicit_overrides(tmp_path):
         "--config", str(cfg_path),
         "--seed", "42",  # explicit default-valued override
         "--judge_max_tokens", "2048",  # explicit default-valued override
+        "--max_model_len", "16384",
+        "--enforce_eager",
         "--gen-kwargs", "top_p=0.9",
     ]
     args = parser.parse_args(argv)
@@ -44,6 +46,8 @@ def test_agreement_resolver_config_plus_explicit_overrides(tmp_path):
 
     assert resolved.config.seed == 42
     assert resolved.config.judge.max_tokens == 2048
+    assert resolved.config.judge.max_model_len == 16384
+    assert resolved.config.judge.enforce_eager is True
     assert resolved.config.judge.generation_kwargs == {"top_p": 0.9}
 
 

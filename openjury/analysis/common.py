@@ -128,6 +128,65 @@ def compute_agreement_metrics(
     }
     if language:
         metrics["language"] = language
+
+    # ── Multi-trial (Average-of-K) confidence metrics ─────────
+    multi_trial_samples = [r for r in per_sample if r.get("n_trials", 1) > 1]
+    if multi_trial_samples:
+        n_trials = multi_trial_samples[0].get("n_trials", 1)
+        std_prefs = [r["std_preference"] for r in multi_trial_samples if "std_preference" in r]
+        self_agrs = [r["self_agreement"] for r in multi_trial_samples if "self_agreement" in r]
+
+        metrics["n_trials"] = n_trials
+        metrics["mean_self_agreement"] = (
+            round(float(np.mean(self_agrs)), 4) if self_agrs else None
+        )
+        metrics["mean_std_preference"] = (
+            round(float(np.mean(std_prefs)), 4) if std_prefs else None
+        )
+        metrics["median_std_preference"] = (
+            round(float(np.median(std_prefs)), 4) if std_prefs else None
+        )
+
+        # ── Confidence-stratified accuracy ────────────────────
+        # Split into high-confidence (std below median) and low-confidence
+        if std_prefs and len(std_prefs) >= 4:
+            median_std = float(np.median(std_prefs))
+            high_conf = [
+                r for r in multi_trial_samples
+                if not r.get("parse_error")
+                and r.get("std_preference", 1.0) <= median_std
+            ]
+            low_conf = [
+                r for r in multi_trial_samples
+                if not r.get("parse_error")
+                and r.get("std_preference", 0.0) > median_std
+            ]
+
+            def _bucket_metrics(
+                bucket: list[dict], label: str,
+            ) -> dict[str, Any]:
+                n_b = len(bucket)
+                if n_b < 2:
+                    return {"n": n_b}
+                n_agr = sum(1 for r in bucket if r.get("agree") is True)
+                bh = [r["human_label"] for r in bucket]
+                bj = [r["judge_label"] for r in bucket]
+                try:
+                    bk = compute_cohen_kappa(bh, bj)
+                except (ValueError, ZeroDivisionError):
+                    bk = None
+                return {
+                    "n": n_b,
+                    "accuracy": round(n_agr / n_b, 4),
+                    "cohens_kappa": round(bk, 4) if bk is not None else None,
+                }
+
+            metrics["confidence_stratified"] = {
+                "std_threshold": round(median_std, 4),
+                "high_confidence": _bucket_metrics(high_conf, "high"),
+                "low_confidence": _bucket_metrics(low_conf, "low"),
+            }
+
     return metrics
 
 
@@ -152,6 +211,8 @@ def log_agreement_summary(metrics: dict[str, Any]) -> None:
     logger.info("  Mode:              %s", metrics["judge_mode"])
     logger.info("  Criteria:          %s", metrics["criteria"])
     logger.info("  Swap debiasing:    %s", "yes" if metrics["swap_debiasing"] else "no")
+    if metrics.get("n_trials", 1) > 1:
+        logger.info("  Trials (K):        %d", metrics["n_trials"])
     logger.info("───────────────────────────────────────────────────")
     if metrics["cohens_kappa"] is not None:
         logger.info("  Cohen's κ:         %.4f", metrics["cohens_kappa"])
@@ -171,6 +232,41 @@ def log_agreement_summary(metrics: dict[str, Any]) -> None:
         logger.info("  Pearson corr:      %.4f", metrics["pearson_correlation"])
     if metrics["mae"] is not None:
         logger.info("  MAE:               %.4f", metrics["mae"])
+
+    # ── Multi-trial confidence metrics ────────────────────────
+    if metrics.get("n_trials", 1) > 1:
+        logger.info("───────────────────────────────────────────────────")
+        logger.info("  Multi-trial confidence (K=%d)", metrics["n_trials"])
+        if metrics.get("mean_self_agreement") is not None:
+            logger.info("  Self-agreement:    %.4f", metrics["mean_self_agreement"])
+        if metrics.get("mean_std_preference") is not None:
+            logger.info("  Mean σ(pref):      %.4f", metrics["mean_std_preference"])
+        if metrics.get("median_std_preference") is not None:
+            logger.info("  Median σ(pref):    %.4f", metrics["median_std_preference"])
+
+        strat = metrics.get("confidence_stratified")
+        if strat:
+            logger.info(
+                "  Confidence split:  σ threshold = %.4f",
+                strat["std_threshold"],
+            )
+            hi = strat["high_confidence"]
+            lo = strat["low_confidence"]
+            if hi.get("accuracy") is not None:
+                logger.info(
+                    "    High-conf:  acc=%.1f%%  κ=%s  (n=%d)",
+                    hi["accuracy"] * 100,
+                    f'{hi["cohens_kappa"]:.4f}' if hi.get("cohens_kappa") is not None else "n/a",
+                    hi["n"],
+                )
+            if lo.get("accuracy") is not None:
+                logger.info(
+                    "    Low-conf:   acc=%.1f%%  κ=%s  (n=%d)",
+                    lo["accuracy"] * 100,
+                    f'{lo["cohens_kappa"]:.4f}' if lo.get("cohens_kappa") is not None else "n/a",
+                    lo["n"],
+                )
+
     logger.info("───────────────────────────────────────────────────")
     h_d = metrics["human_distribution"]
     j_d = metrics["judge_distribution"]
@@ -201,11 +297,22 @@ def save_agreement_outputs(
 
     csv_rows: list[dict[str, Any]] = []
     for r in per_sample:
-        flat = {k: v for k, v in r.items() if k not in ("scores_a", "scores_b", "metadata")}
+        flat = {k: v for k, v in r.items() if k not in (
+            "scores_a", "scores_b", "metadata",
+            "score_std_a", "score_std_b",
+            "trial_raw_outputs", "trial_raw_outputs_swapped",
+        )}
         for dim, val in r["scores_a"].items():
             flat[f"score_a_{dim}"] = val
         for dim, val in r["scores_b"].items():
             flat[f"score_b_{dim}"] = val
+        # Multi-trial score std columns
+        if r.get("score_std_a"):
+            for dim, val in r["score_std_a"].items():
+                flat[f"score_std_a_{dim}"] = val
+        if r.get("score_std_b"):
+            for dim, val in r["score_std_b"].items():
+                flat[f"score_std_b_{dim}"] = val
         if r.get("metadata"):
             for mk, mv in r["metadata"].items():
                 flat[f"meta_{mk}"] = mv

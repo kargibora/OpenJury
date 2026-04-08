@@ -1,0 +1,20 @@
+# Reusable agreement config for LMSYS pairwise judging.
+# Use CLI overrides like --judge_model / --judge_gpus when trying a different judge.
+
+dataset: lmsys
+n_instructions: 25000
+seed: 42
+balance_by: models
+criteria: default
+output_dir: results/agreement_test
+
+generation:
+  ignore_score_cache: true
+
+criteria: configs/criteria/default_5pt.yaml
+judge:
+  model: VLLM/Qwen/Qwen3-32B
+  gpus: 4
+  mode: pairwise
+  # max_model_len: 32768
+  enforce_eager: true

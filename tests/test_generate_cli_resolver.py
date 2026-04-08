@@ -6,6 +6,9 @@ import pytest
 
 from openjury.cli._resolvers.generate import resolve_generate_cli
 from openjury.cli_args import add_dataset_args, add_dataset_selection_args
+from openjury.datasets.options import DatasetOptions
+from openjury.generate_config import GenerateConfig, GenerateRuntimeConfig
+from openjury.models.config import ModelEntry
 
 
 def _generate_parser() -> argparse.ArgumentParser:
@@ -62,24 +65,21 @@ def test_generate_resolver_builds_slurm_forward_and_dataset_options(tmp_path):
         "balance_by": "lang",
     }
     assert "balance=lang" in resolved.config.dataset_options.cache_key()
-    assert resolved.config.max_tokens == 1024
-    assert resolved.config.tensor_parallel_size == 2
-    assert resolved.config.quantization == "fp8"
-    assert resolved.config.ignore_cache is True
+    assert resolved.config.model_entry.name == "VLLM/Qwen/Qwen2.5-0.5B-Instruct"
+    assert resolved.config.model_entry.gpus == 2
+    assert resolved.config.model_entry.quantization == "fp8"
+    assert resolved.config.model_entry.max_tokens == 1024
+    assert resolved.config.runtime.ignore_cache is True
     assert resolved.slurm_forward is not None
     assert resolved.slurm_forward.mode == "generate"
     assert resolved.slurm_forward.submit is True
 
 
 def test_generate_resolver_config_plus_explicit_default_overrides(tmp_path):
-    from openjury.generate_config import GenerateConfig
-
     cfg = GenerateConfig(
-        model="VLLM/Qwen/Qwen2.5-0.5B-Instruct",
-        dataset="alpaca-eval",
+        model=ModelEntry(name="VLLM/Qwen/Qwen2.5-0.5B-Instruct", max_tokens=999),
+        dataset=DatasetOptions(name="alpaca-eval", seed=7),
         output=str(tmp_path / "cfg.parquet"),
-        seed=7,
-        max_tokens=999,
     )
     cfg_path = tmp_path / "generate.json"
     cfg.save(cfg_path)
@@ -95,8 +95,49 @@ def test_generate_resolver_config_plus_explicit_default_overrides(tmp_path):
     resolved = resolve_generate_cli(parser, args, argv)
 
     assert resolved.config.output == str(tmp_path / "override.parquet")
-    assert resolved.config.seed == 42
-    assert resolved.config.max_tokens == 4096
+    assert resolved.config.dataset_options.seed == 42
+    assert resolved.config.model_entry.max_tokens == 4096
+
+
+def test_generate_resolver_config_can_override_structured_model_fields(tmp_path):
+    cfg = GenerateConfig(
+        model=ModelEntry(
+            name="VLLM/Orig/Model",
+            gpus=1,
+            quantization="awq",
+            max_tokens=999,
+        ),
+        dataset=DatasetOptions(name="alpaca-eval"),
+        output=str(tmp_path / "cfg.parquet"),
+        runtime=GenerateRuntimeConfig(),
+    )
+    cfg_path = tmp_path / "generate.json"
+    cfg.save(cfg_path)
+
+    parser = _generate_parser()
+    argv = [
+        "--config", str(cfg_path),
+        "--model", "VLLM/New/Model",
+        "--tensor_parallel_size", "4",
+        "--quantization", "fp8",
+        "--max_tokens", "4096",
+    ]
+    args = parser.parse_args(argv)
+    resolved = resolve_generate_cli(parser, args, argv)
+
+    assert resolved.config.model_entry.to_dict() == {
+        "name": "VLLM/New/Model",
+        "gpus": 4,
+        "quantization": "fp8",
+        "max_tokens": 4096,
+    }
+    assert resolved.config.runtime.to_dict() == {
+        "truncate_input_chars": 8192,
+        "gpu_memory_utilization": 0.9,
+        "use_tqdm": False,
+        "base_model": False,
+        "ignore_cache": False,
+    }
 
 
 def test_generate_resolver_rejects_unsupported_slurm_flags(tmp_path):

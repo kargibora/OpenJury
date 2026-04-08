@@ -123,6 +123,72 @@ class VLLMConfig(ModelConfig):
     )
 
 
+class SGLangConfig(ModelConfig):
+    """Configuration for local SGLang inference.
+
+    Mirrors the subset of ``sglang.Engine`` / ``ServerArgs`` fields that map
+    cleanly onto the current framework abstractions.
+    """
+
+    tensor_parallel_size: int = Field(
+        default=1,
+        ge=1,
+        description="Number of GPUs for tensor parallelism (maps to SGLang tp_size)",
+    )
+    pipeline_parallel_size: int = Field(
+        default=1,
+        ge=1,
+        description="Number of pipeline parallel stages (maps to SGLang pp_size)",
+    )
+    gpu_devices: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated GPU device IDs to pin this model to. "
+            "None = use all visible GPUs."
+        ),
+    )
+    mem_fraction_static: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Static GPU memory fraction reserved by SGLang. "
+            "Roughly analogous to vLLM's gpu_memory_utilization."
+        ),
+    )
+    context_length: int | None = Field(
+        default=None,
+        description="Maximum context length passed to SGLang.",
+    )
+    quantization: str | None = Field(
+        default=None,
+        description="Quantization mode passed to SGLang.",
+    )
+    dtype: str = Field(
+        default="auto",
+        description="Data type for model weights (auto, float16, bfloat16, float32)",
+    )
+    trust_remote_code: bool = Field(
+        default=True,
+        description="Trust remote code in model repository",
+    )
+    top_k: int = Field(default=-1, description="Top-k sampling (-1 = disabled)")
+    enable_thinking: bool | None = Field(
+        default=None,
+        description=(
+            "Enable thinking/reasoning mode for models whose chat template "
+            "supports it. Passed through tokenizer.apply_chat_template."
+        ),
+    )
+    chat_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit Jinja chat template override. If provided, "
+            "it is applied through the tokenizer before Engine.generate()."
+        ),
+    )
+
+
 class OpenAIConfig(ModelConfig):
     """Configuration for OpenAI-compatible API backends.
 

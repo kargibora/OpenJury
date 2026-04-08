@@ -15,6 +15,8 @@ import argparse
 from dataclasses import dataclass
 from typing import Any
 
+from openjury.annotate_config import AnnotateConfig
+from openjury.arena.config import ModelEntry
 from openjury.resolution.argparse_overrides import (
     apply_mapping_from_config,
     collect_explicit_dests,
@@ -27,6 +29,18 @@ class ResolvedTaskConfigPayload:
     """Optional typed task config payload preserved for SLURM config emission."""
     kind: str | None = None
     payload: dict[str, Any] | None = None
+
+
+def _set_model_entries(args: argparse.Namespace, models: list[ModelEntry]) -> None:
+    """Populate structured and flat model args from typed model entries."""
+    entries = [ModelEntry.from_raw(model.to_dict()) for model in models]
+    args.model_entries = entries
+    args.models = [model.name for model in entries]
+    args.model_gpus = [model.gpus for model in entries]
+    args.model_quantizations = [
+        model.quantization if model.quantization is not None else "none"
+        for model in entries
+    ]
 
 
 def resolve_args_from_config(
@@ -44,6 +58,8 @@ def resolve_args_from_config(
     explicit = explicit_dests or set()
     if args.mode == "agreement":
         return _apply_agreement_config(args, explicit)
+    if args.mode == "annotate":
+        return _apply_annotate_config(args, explicit)
     if args.mode == "generate":
         return _apply_generate_config(args, explicit)
     else:  # ``arena`` / ``judge`` reuse ArenaConfig today.
@@ -57,27 +73,36 @@ def _apply_generate_config(
     from openjury.generate_config import GenerateConfig
 
     cfg = GenerateConfig.load(args.config)
+    dataset_opts = cfg.dataset_options
+    runtime = cfg.runtime
 
     apply_mapping_from_config(
         args,
         explicit,
         cfg,
         [
-            ("dataset", lambda c: c.dataset),
-            ("n_instructions", lambda c: c.n_instructions),
-            ("language", lambda c: c.language),
-            ("seed", lambda c: c.seed),
-            ("balance_by", lambda c: c.balance_by),
-            ("generation_max_tokens", lambda c: c.max_tokens),
-            ("truncate_input_chars", lambda c: c.truncate_input_chars),
-            ("models", lambda c: [c.model]),
-            ("model_gpus", lambda c: [c.tensor_parallel_size]),
-            ("model_quantizations", lambda c: [c.quantization or "none"]),
+            ("dataset", lambda _c: dataset_opts.name),
+            ("n_instructions", lambda _c: dataset_opts.n_instructions),
+            ("language", lambda _c: dataset_opts.language),
+            ("seed", lambda _c: dataset_opts.seed),
+            ("balance_by", lambda _c: dataset_opts.balance_by),
+            (
+                "generation_max_tokens",
+                lambda _c: cfg.model_entry.max_tokens
+                if cfg.model_entry.max_tokens is not None
+                else 4096,
+            ),
+            ("truncate_input_chars", lambda _c: runtime.truncate_input_chars),
         ],
         present=present_nonempty,
     )
 
-    if cfg.ignore_cache:
+    _set_model_entries(
+        args,
+        [cfg.model_entry],
+    )
+
+    if runtime.ignore_cache:
         args.ignore_cache = True
 
     return ResolvedTaskConfigPayload(kind="generate", payload=cfg.to_dict())
@@ -113,6 +138,9 @@ def _apply_agreement_config(
             ),
             ("chat_template", lambda c: c.judge.chat_template),
             ("chat_template_file", lambda c: c.judge.chat_template_file),
+            ("judge_temperature", lambda c: c.judge.temperature),
+            ("judge_top_p", lambda c: c.judge.top_p),
+            ("judge_n_trials", lambda c: c.judge.n_trials),
             ("criteria", lambda c: c.criteria),
             ("n_instructions", lambda c: c.n_instructions),
             ("language", lambda c: c.language),
@@ -124,9 +152,49 @@ def _apply_agreement_config(
 
     if cfg.ignore_score_cache:
         args.ignore_score_cache = True
+    if cfg.judge.max_model_len is not None:
+        resolved_max_model_len = (
+            getattr(args, "max_model_len", None)
+            or getattr(args, "judge_max_model_len", None)
+            or cfg.judge.max_model_len
+        )
+        args.max_model_len = resolved_max_model_len
+        args.judge_max_model_len = resolved_max_model_len
+    if cfg.judge.enforce_eager:
+        args.enforce_eager = True
+        args.judge_enforce_eager = True
     if not args.models:
         args.models = []
     return ResolvedTaskConfigPayload(kind="agreement", payload=cfg.to_dict())
+
+
+def _apply_annotate_config(
+    args: argparse.Namespace,
+    explicit: set[str],
+) -> ResolvedTaskConfigPayload:
+    cfg = AnnotateConfig.load(args.config)
+
+    apply_mapping_from_config(
+        args,
+        explicit,
+        cfg,
+        [
+            ("dataset", lambda c: c.dataset),
+            ("judge_model", lambda c: c.judge.model),
+            ("judge_gpus", lambda c: c.judge.gpus),
+            ("judge_quantization", lambda c: c.judge.quantization),
+            ("judge_mode", lambda c: c.judge.mode),
+            ("pairwise_prompt_style", lambda c: c.judge.pairwise_prompt_style),
+            ("judge_max_tokens", lambda c: c.judge.max_tokens),
+            ("criteria", lambda c: c.criteria),
+            ("n_instructions", lambda c: c.n_instructions),
+            ("language", lambda c: c.language),
+            ("seed", lambda c: c.seed),
+            ("balance_by", lambda c: c.balance_by),
+        ],
+    )
+
+    return ResolvedTaskConfigPayload(kind="annotate", payload=cfg.to_dict())
 
 
 def _apply_arena_config(
@@ -142,13 +210,7 @@ def _apply_arena_config(
         explicit,
         cfg,
         [
-            ("models", lambda c: c.model_names),
             ("judge_model", lambda c: c.judge.model),
-            ("model_gpus", lambda c: [m.gpus for m in c.models]),
-            (
-                "model_quantizations",
-                lambda c: [m.quantization or "none" for m in c.models],
-            ),
             ("dataset", lambda c: c.dataset),
             ("n_instructions", lambda c: c.n_instructions),
             ("language", lambda c: c.language),
@@ -169,6 +231,9 @@ def _apply_arena_config(
             ),
             ("chat_template", lambda c: c.judge.chat_template),
             ("chat_template_file", lambda c: c.judge.chat_template_file),
+            ("judge_temperature", lambda c: c.judge.temperature),
+            ("judge_top_p", lambda c: c.judge.top_p),
+            ("judge_n_trials", lambda c: c.judge.n_trials),
             ("matchmaker", lambda c: c.matchmaker.strategy),
             ("n_matches", lambda c: c.matchmaker.n_matches),
             ("generation_max_tokens", lambda c: c.generation_max_tokens),
@@ -177,17 +242,30 @@ def _apply_arena_config(
         present=present_nonempty,
     )
 
+    _set_model_entries(args, cfg.models)
+
     if cfg.ignore_cache:
         args.ignore_cache = True
     if cfg.ignore_score_cache:
         args.ignore_score_cache = True
+    if cfg.judge.max_model_len is not None:
+        resolved_max_model_len = (
+            getattr(args, "max_model_len", None)
+            or getattr(args, "judge_max_model_len", None)
+            or cfg.judge.max_model_len
+        )
+        args.max_model_len = resolved_max_model_len
+        args.judge_max_model_len = resolved_max_model_len
+    if cfg.judge.enforce_eager:
+        args.enforce_eager = True
+        args.judge_enforce_eager = True
     return ResolvedTaskConfigPayload(kind="arena", payload=cfg.to_dict())
 
 
 def validate_mode_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Validate mode-specific required args after config resolution."""
     stage = getattr(args, "stage", "all")
-    if args.mode in {"generate", "judge"} and stage != "all":
+    if args.mode in {"generate", "judge", "annotate"} and stage != "all":
         parser.error("--stage is only supported for --mode arena or --mode agreement.")
 
     if args.mode == "arena":
@@ -208,6 +286,11 @@ def validate_mode_args(parser: argparse.ArgumentParser, args: argparse.Namespace
             )
         if not args.judge_model:
             args.judge_model = "none"
+    elif args.mode == "annotate":
+        if not getattr(args, "config", None):
+            parser.error(
+                "--config is required for annotate mode when using openjury-slurm."
+            )
     elif args.mode == "judge":
         if not args.models or len(args.models) < 2:
             parser.error(

@@ -4,10 +4,11 @@ import argparse
 
 import pytest
 
-from openjury.arena.config import AgreementConfig, JudgeConfig
+from openjury.arena.config import AgreementConfig, ArenaConfig, JudgeConfig, ModelEntry
 from openjury.generate_config import GenerateConfig
 from openjury.resolution.argparse_overrides import collect_explicit_dests
 from openjury.slurm.config_resolver import resolve_args_from_config, validate_mode_args
+from openjury.slurm.generate_slurm import build_run_plan_from_env_and_args
 
 
 def test_collect_explicit_dests_detects_value_and_equals_forms():
@@ -116,9 +117,155 @@ def test_slurm_config_resolver_supports_generate_config(tmp_path):
     assert args.models == ["VLLM/Qwen/Qwen2.5-0.5B-Instruct"]
     assert args.model_gpus == [2]
     assert args.model_quantizations == ["fp8"]
+    assert len(args.model_entries) == 1
+    assert args.model_entries[0].name == "VLLM/Qwen/Qwen2.5-0.5B-Instruct"
+    assert args.model_entries[0].gpus == 2
+    assert args.model_entries[0].quantization == "fp8"
     assert args.ignore_cache is True
     assert payload.kind == "generate"
     assert payload.payload and payload.payload["output"] == str(tmp_path / "gen.parquet")
+    assert payload.payload["dataset"] == {
+        "name": "alpaca-eval",
+        "n_instructions": 11,
+        "language": "en",
+        "seed": 13,
+        "balance_by": "lang",
+    }
+    assert payload.payload["runtime"] == {
+        "truncate_input_chars": 4321,
+        "gpu_memory_utilization": 0.9,
+        "use_tqdm": False,
+        "base_model": False,
+        "ignore_cache": True,
+    }
+
+
+def test_slurm_config_resolver_preserves_rich_arena_model_entries(tmp_path):
+    cfg = ArenaConfig(
+        dataset="alpaca-eval",
+        models=[
+            ModelEntry(
+                name="VLLM/Dummy/A",
+                gpus=2,
+                quantization="fp8",
+                max_tokens=123,
+                generation_kwargs={"top_k": 7},
+            ),
+            ModelEntry(name="OpenRouter/Dummy/B", chat_template="{{ messages }}"),
+        ],
+        judge=JudgeConfig(model="OpenRouter/Dummy/J"),
+    )
+    cfg_path = tmp_path / "arena.json"
+    cfg.save(cfg_path)
+
+    args = argparse.Namespace(
+        config=str(cfg_path),
+        mode="arena",
+        models=None,
+        model_gpus=None,
+        model_quantizations=None,
+        judge_model=None,
+        dataset=None,
+        n_instructions=None,
+        language=None,
+        seed=42,
+        balance_by=None,
+        criteria="default",
+        judge_gpus=1,
+        judge_quantization=None,
+        judge_mode="samplewise",
+        pairwise_prompt_style="criteria",
+        enable_thinking=False,
+        chat_template=None,
+        chat_template_file=None,
+        matchmaker="round_robin",
+        n_matches=None,
+        generation_max_tokens=4096,
+        truncate_input_chars=8192,
+        ignore_cache=False,
+        ignore_score_cache=False,
+        max_model_len=None,
+        judge_max_model_len=None,
+        enforce_eager=False,
+        judge_enforce_eager=False,
+        truncate_instruction=500,
+    )
+
+    payload = resolve_args_from_config(args, explicit_dests=set())
+
+    assert payload.kind == "arena"
+    assert args.models == ["VLLM/Dummy/A", "OpenRouter/Dummy/B"]
+    assert args.model_gpus == [2, 1]
+    assert args.model_quantizations == ["fp8", "none"]
+    assert args.model_entries[0].max_tokens == 123
+    assert args.model_entries[0].generation_kwargs == {"top_k": 7}
+    assert args.model_entries[1].chat_template == "{{ messages }}"
+
+
+def test_build_run_plan_from_env_and_args_uses_structured_model_entries(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("USER_WORK_DIR", str(tmp_path / "user_work"))
+    monkeypatch.setenv("ACCOUNT", "acct")
+    monkeypatch.setenv("PARTITION", "part")
+    monkeypatch.setenv("TIME_LIMIT", "00:30:00")
+
+    args = argparse.Namespace(
+        dataset="alpaca-eval",
+        judge_model="OpenRouter/Dummy/J",
+        judge_gpus=1,
+        judge_quantization=None,
+        judge_mode="samplewise",
+        pairwise_prompt_style="criteria",
+        judge_max_tokens=2048,
+        no_swap=False,
+        provide_explanation=False,
+        enable_thinking=False,
+        chat_template=None,
+        chat_template_file=None,
+        max_model_len=None,
+        judge_max_model_len=None,
+        enforce_eager=False,
+        judge_enforce_eager=False,
+        gen_kwargs=None,
+        criteria="default",
+        n_instructions=10,
+        generation_max_tokens=4096,
+        truncate_input_chars=8192,
+        ignore_cache=False,
+        ignore_score_cache=False,
+        language=None,
+        seed=42,
+        balance_by=None,
+        truncate_instruction=500,
+        stage="all",
+        mode="arena",
+        models=None,
+        model_gpus=None,
+        model_quantizations=None,
+        model_entries=[
+            ModelEntry(name="VLLM/Dummy/A", gpus=2, quantization="fp8"),
+            ModelEntry(name="OpenRouter/Dummy/B"),
+        ],
+        partition=None,
+        account=None,
+        time_generate=None,
+        time_judge=None,
+        qos="normal",
+        project_dir=None,
+        tag="TESTTAG",
+    )
+
+    plan = build_run_plan_from_env_and_args(args)
+
+    assert [model.name for model in plan.models] == [
+        "VLLM/Dummy/A",
+        "OpenRouter/Dummy/B",
+    ]
+    assert plan.models[0].gpus == 2
+    assert plan.models[0].quantization == "fp8"
+    assert plan.judge.model == "OpenRouter/Dummy/J"
+    assert plan.execution.partition == "part"
 
 
 def test_validate_mode_args_rejects_stage_for_generate_and_judge():

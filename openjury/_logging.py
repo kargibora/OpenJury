@@ -36,7 +36,7 @@ _theme = Theme(
     }
 )
 
-console = Console(theme=_theme)
+console = Console(theme=_theme, soft_wrap=True)
 
 
 def _setup_logger() -> logging.Logger:

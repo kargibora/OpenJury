@@ -244,6 +244,52 @@ class VLLMBackend:
             )
         return [out.outputs[0].text for out in outputs]
 
+    def batch_multi(self, inputs: list, n: int = 1, **kwargs) -> list[list[str]]:
+        """Process a batch returning *n* completions per input.
+
+        Uses ``SamplingParams(n=K)`` so the expensive prompt encoding is
+        performed once per input — only the decode phase is replicated.
+
+        Args:
+            inputs: List of inputs in any supported format.
+            n: Number of completions per input.
+
+        Returns:
+            ``list[list[str]]`` — outer list aligned with *inputs*, inner
+            list has *n* generated texts.
+        """
+        from vllm import SamplingParams as _SP
+
+        if n <= 1:
+            return [[t] for t in self.batch(inputs, **kwargs)]
+
+        # Build a SamplingParams clone with n > 1
+        sp_kwargs = {
+            "max_tokens": self.sampling_params.max_tokens,
+            "temperature": self.sampling_params.temperature,
+            "top_p": self.sampling_params.top_p,
+            "n": n,
+        }
+        if self.sampling_params.top_k != -1:
+            sp_kwargs["top_k"] = self.sampling_params.top_k
+        multi_sp = _SP(**sp_kwargs)
+
+        if self._use_generate:
+            prompts = [_to_raw_text(inp) for inp in inputs]
+            outputs = self.llm.generate(prompts, multi_sp)
+        else:
+            messages_batch = [_to_messages(inp) for inp in inputs]
+            chat_kwargs: dict[str, Any] = {
+                "add_generation_prompt": True,
+            }
+            if self.chat_template is not None:
+                chat_kwargs["chat_template"] = self.chat_template
+            if self.chat_template_kwargs is not None:
+                chat_kwargs["chat_template_kwargs"] = self.chat_template_kwargs
+            outputs = self.llm.chat(messages_batch, multi_sp, **chat_kwargs)
+
+        return [[o.text for o in out.outputs] for out in outputs]
+
     def invoke(self, input_item, **kwargs) -> str:
         """Process a single input.
 

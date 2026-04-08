@@ -1,0 +1,21 @@
+# Test config: Average-of-K multi-trial judging
+# Qwen3-8B judge, lmsys dataset, 100 instructions, K=5 trials
+
+dataset: lmsys
+n_instructions: 1000
+seed: 42
+balance_by: models
+criteria: default
+output_dir: results/agreement_multitrial_test
+
+generation:
+  ignore_score_cache: true
+
+judge:
+  model: VLLM/Qwen/Qwen3-32B
+  gpus: 4
+  mode: pairwise
+  max_model_len: 32768
+  enforce_eager: true
+  temperature: 0.0
+  n_trials: 1

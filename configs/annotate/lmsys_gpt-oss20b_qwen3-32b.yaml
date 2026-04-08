@@ -1,0 +1,33 @@
+dataset: lmsys
+n_instructions: 500
+seed: 42
+balance_by: models
+
+challenger:
+  name: VLLM/openai/gpt-oss-20b
+  gpus: 4
+
+judge:
+  model: VLLM/Qwen/Qwen3-32B
+  gpus: 4
+  mode: pairwise
+  max_model_len: 16384
+  enforce_eager: true
+
+criteria: default
+
+pairing:
+  source: challenger_vs_dataset_inline
+  strategy: random_single
+  seed: 42
+
+generation:
+  max_tokens: 4096
+  truncate_input_chars: 8192
+  ignore_cache: false
+  gpu_memory_utilization: 0.9
+  ignore_score_cache: false
+
+output_dir: results/annotate/lmsys_gpt-oss20b_qwen3-32b
+include_completions: false
+include_raw_judge: false

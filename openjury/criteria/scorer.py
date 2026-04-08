@@ -45,8 +45,14 @@ import pandas as pd
 
 from openjury._logging import logger
 from openjury.prompts import load_prompt
-from openjury.criteria.schema import Criteria, CriteriaScore, PairwiseCriteriaResult
-from openjury.inference import do_inference
+from openjury.criteria.schema import (
+    Criteria,
+    CriteriaScore,
+    MultiTrialPairwiseResult,
+    MultiTrialSamplewiseResult,
+    PairwiseCriteriaResult,
+)
+from openjury.inference import do_inference, do_inference_multi
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -200,6 +206,51 @@ class CriteriaScorer:
             for k, v in scores.items()
         }
 
+    def _coerce_score_value(self, value: Any) -> float:
+        """Best-effort coercion for judge outputs that nest numeric scores.
+
+        Some models emit values like ``[7]`` or ``{"score": 7}`` even when the
+        prompt asks for a plain scalar. Treat these as recoverable parser noise
+        rather than crashing the evaluation run.
+        """
+        if isinstance(value, bool) or value is None:
+            raise TypeError(f"Unsupported score value: {value!r}")
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            match = re.search(r"-?\d+(?:\.\d+)?", value.strip())
+            if match:
+                return float(match.group(0))
+            raise ValueError(f"Could not parse numeric score from string: {value!r}")
+        if isinstance(value, dict):
+            for key in ("score", "value", "rating"):
+                if key in value:
+                    return self._coerce_score_value(value[key])
+            for nested in value.values():
+                try:
+                    return self._coerce_score_value(nested)
+                except (TypeError, ValueError):
+                    continue
+            raise TypeError(f"Unsupported nested score object: {value!r}")
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                try:
+                    return self._coerce_score_value(item)
+                except (TypeError, ValueError):
+                    continue
+            raise TypeError(f"Unsupported score list: {value!r}")
+        raise TypeError(f"Unsupported score value type: {type(value)!r}")
+
+    def _coerce_scores_dict(self, scores: dict[str, Any]) -> dict[str, float]:
+        """Coerce a parsed JSON dict into criterion -> float scores."""
+        return self._normalize_score_keys(
+            {k: self._coerce_score_value(v) for k, v in scores.items()}
+        )
+
+    def _nan_scores_dict(self) -> dict[str, float]:
+        """Return a NaN-filled score dict aligned with this criteria set."""
+        return {cname: float("nan") for cname in self.criteria.criterion_names}
+
     # ─────────────────────────────────────────────────────────────
     #  Pairwise scoring (recommended for ranking)
     # ─────────────────────────────────────────────────────────────
@@ -212,12 +263,18 @@ class CriteriaScorer:
         swap_to_debias: bool = True,
         use_tqdm: bool = False,
         force_async: bool = False,
-    ) -> list[PairwiseCriteriaResult]:
-        """Compare A vs B on criteria in a single judge call.
+        n_trials: int = 1,
+    ) -> list[PairwiseCriteriaResult] | list[MultiTrialPairwiseResult]:
+        """Compare A vs B on criteria.
 
         The judge sees both completions, scores each on every criterion,
         and states an overall preference. If ``swap_to_debias=True``, runs
         each pair twice (A/B then B/A) and averages to cancel position bias.
+
+        When ``n_trials > 1``, the judge is called K times per sample (with
+        ``SamplingParams(n=K)`` for local models) and results are aggregated
+        into :class:`MultiTrialPairwiseResult` objects with per-sample
+        confidence statistics.
 
         Args:
             instructions: List of instructions/prompts.
@@ -226,14 +283,143 @@ class CriteriaScorer:
             swap_to_debias: Run A/B + B/A and average (recommended).
             use_tqdm: Show progress bar.
             force_async: Use async inference for API models.
+            n_trials: Number of independent judge calls per sample.
+                ``1`` = original behaviour. ``K > 1`` = Average-of-K with
+                confidence estimation. Requires ``temperature > 0``.
 
         Returns:
-            List of PairwiseCriteriaResult, one per instruction.
+            ``n_trials == 1``: ``list[PairwiseCriteriaResult]`` (one per instruction).
+            ``n_trials > 1``: ``list[MultiTrialPairwiseResult]`` with aggregated stats.
         """
         assert len(instructions) == len(completions_A) == len(completions_B)
+        num_samples = len(instructions)
+
+        if n_trials < 1:
+            raise ValueError(f"n_trials must be >= 1, got {n_trials}")
+
+        # ── Single-trial fast path (original behaviour) ──────────
+        if n_trials == 1:
+            return self._score_pairwise_single(
+                instructions, completions_A, completions_B,
+                swap_to_debias=swap_to_debias,
+                use_tqdm=use_tqdm,
+                force_async=force_async,
+            )
+
+        # ── Multi-trial path: K trials per sample ────────────────
+        logger.info(
+            "Multi-trial pairwise scoring: %d pairs × %d trials on %d criteria",
+            num_samples, n_trials, self.criteria.num_criteria,
+        )
+
+        prompts_ab = self._build_pairwise_prompts(
+            instructions, completions_A, completions_B,
+        )
+
+        # Returns list[list[str]] — [sample_i][trial_k]
+        logger.info("  A/B order: %d pairs × %d trials", num_samples, n_trials)
+        multi_ab = do_inference_multi(
+            chat_model=self.judge_model,
+            inputs=prompts_ab,
+            n=n_trials,
+            use_tqdm=use_tqdm,
+            force_async=force_async,
+        )
+
+        multi_ba: list[list[str]] | None = None
+        if swap_to_debias:
+            prompts_ba = self._build_pairwise_prompts(
+                instructions=instructions,
+                completions_A=completions_B,
+                completions_B=completions_A,
+            )
+            logger.info("  B/A order: %d pairs × %d trials (debiasing)", num_samples, n_trials)
+            multi_ba = do_inference_multi(
+                chat_model=self.judge_model,
+                inputs=prompts_ba,
+                n=n_trials,
+                use_tqdm=use_tqdm,
+                force_async=force_async,
+            )
+
+        # Parse each trial independently, then aggregate
+        results: list[MultiTrialPairwiseResult] = []
+        for i in range(num_samples):
+            trials_for_sample: list[PairwiseCriteriaResult] = []
+            for k in range(n_trials):
+                text_ab = multi_ab[i][k]
+                try:
+                    parsed_ab = self._parse_pairwise(text_ab)
+                except Exception as exc:
+                    logger.warning(
+                        "Parse failure sample %d trial %d (A/B): %s", i, k, exc,
+                    )
+                    parsed_ab = {
+                        "scores_A": self._nan_scores_dict(),
+                        "scores_B": self._nan_scores_dict(),
+                        "preference": 0.5,
+                    }
+
+                if swap_to_debias and multi_ba is not None:
+                    text_ba = multi_ba[i][k]
+                    try:
+                        parsed_ba = self._parse_pairwise(text_ba)
+                    except Exception as exc:
+                        logger.warning(
+                            "Parse failure sample %d trial %d (B/A): %s", i, k, exc,
+                        )
+                        parsed_ba = {
+                            "scores_A": self._nan_scores_dict(),
+                            "scores_B": self._nan_scores_dict(),
+                            "preference": 0.5,
+                        }
+                    merged = self._merge_swapped(parsed_ab, parsed_ba)
+                    merged_raw_swapped = text_ba
+                else:
+                    merged = parsed_ab
+                    merged_raw_swapped = None
+
+                trials_for_sample.append(PairwiseCriteriaResult(
+                    instruction_index=i,
+                    scores_A=merged["scores_A"],
+                    scores_B=merged["scores_B"],
+                    preference=merged["preference"],
+                    raw_judge_output=text_ab,
+                    raw_judge_output_swapped=merged_raw_swapped,
+                    scores_A_original=merged.get("scores_A_original"),
+                    scores_B_original=merged.get("scores_B_original"),
+                    preference_original=merged.get("preference_original"),
+                    scores_A_swapped=merged.get("scores_A_swapped"),
+                    scores_B_swapped=merged.get("scores_B_swapped"),
+                    preference_swapped=merged.get("preference_swapped"),
+                ))
+
+            results.append(
+                MultiTrialPairwiseResult.from_trials(i, trials_for_sample)
+            )
+
+        valid = sum(1 for r in results if r.mean_preference != 0.5)
+        logger.info(
+            "Multi-trial pairwise: %d/%d valid preferences "
+            "(K=%d, mean self-agreement=%.2f)%s",
+            valid, num_samples, n_trials,
+            np.mean([r.self_agreement for r in results]),
+            " (position-swap debiased)" if swap_to_debias else "",
+        )
+        return results
+
+    def _score_pairwise_single(
+        self,
+        instructions: list[str],
+        completions_A: list[str],
+        completions_B: list[str],
+        swap_to_debias: bool = True,
+        use_tqdm: bool = False,
+        force_async: bool = False,
+    ) -> list[PairwiseCriteriaResult]:
+        """Single-trial pairwise scoring (original implementation)."""
         n = len(instructions)
 
-        # Build A/B prompts
         prompts_ab = self._build_pairwise_prompts(
             instructions, completions_A, completions_B,
         )
@@ -249,13 +435,12 @@ class CriteriaScorer:
             force_async=force_async,
         )
 
-        # Optionally run B/A for debiasing
         raw_ba = None
         if swap_to_debias:
             prompts_ba = self._build_pairwise_prompts(
                 instructions=instructions,
-                completions_A=completions_B,  # SWAPPED
-                completions_B=completions_A,  # SWAPPED
+                completions_A=completions_B,
+                completions_B=completions_A,
             )
             logger.info(
                 "Pairwise criteria scoring: %d pairs on %d criteria (B/A debiasing)",
@@ -268,15 +453,38 @@ class CriteriaScorer:
                 force_async=force_async,
             )
 
-        # Parse and merge results
         results: list[PairwiseCriteriaResult] = []
         for i in range(n):
             text_ab = raw_ab[i] if isinstance(raw_ab[i], str) else raw_ab[i].content
-            parsed_ab = self._parse_pairwise(text_ab)
+            try:
+                parsed_ab = self._parse_pairwise(text_ab)
+            except Exception as exc:
+                logger.warning(
+                    "Unexpected pairwise parse failure for sample %d (A/B order): %s",
+                    i,
+                    exc,
+                )
+                parsed_ab = {
+                    "scores_A": self._nan_scores_dict(),
+                    "scores_B": self._nan_scores_dict(),
+                    "preference": 0.5,
+                }
 
             if swap_to_debias and raw_ba is not None:
                 text_ba = raw_ba[i] if isinstance(raw_ba[i], str) else raw_ba[i].content
-                parsed_ba = self._parse_pairwise(text_ba)
+                try:
+                    parsed_ba = self._parse_pairwise(text_ba)
+                except Exception as exc:
+                    logger.warning(
+                        "Unexpected pairwise parse failure for sample %d (B/A order): %s",
+                        i,
+                        exc,
+                    )
+                    parsed_ba = {
+                        "scores_A": self._nan_scores_dict(),
+                        "scores_B": self._nan_scores_dict(),
+                        "preference": 0.5,
+                    }
                 merged = self._merge_swapped(parsed_ab, parsed_ba)
                 merged_raw_swapped = text_ba
             else:
@@ -290,6 +498,12 @@ class CriteriaScorer:
                 preference=merged["preference"],
                 raw_judge_output=text_ab,
                 raw_judge_output_swapped=merged_raw_swapped,
+                scores_A_original=merged.get("scores_A_original"),
+                scores_B_original=merged.get("scores_B_original"),
+                preference_original=merged.get("preference_original"),
+                scores_A_swapped=merged.get("scores_A_swapped"),
+                scores_B_swapped=merged.get("scores_B_swapped"),
+                preference_swapped=merged.get("preference_swapped"),
             ))
 
         valid = sum(1 for r in results if r.preference != 0.5)
@@ -351,7 +565,7 @@ class CriteriaScorer:
             try:
                 data = json.loads(json_match.group(1))
                 return self._extract_pairwise_from_dict(data)
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         # Fallback: find any large JSON object
@@ -360,7 +574,7 @@ class CriteriaScorer:
             try:
                 data = json.loads(json_match.group(0))
                 return self._extract_pairwise_from_dict(data)
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         # Last resort: try regex for individual score patterns
@@ -483,8 +697,8 @@ class CriteriaScorer:
         else:
             pref = 0.5
 
-        scores_a = self._normalize_score_keys({k: float(v) for k, v in scores_a.items()})
-        scores_b = self._normalize_score_keys({k: float(v) for k, v in scores_b.items()})
+        scores_a = self._coerce_scores_dict(scores_a)
+        scores_b = self._coerce_scores_dict(scores_b)
 
         return {"scores_A": scores_a, "scores_B": scores_b, "preference": pref}
 
@@ -493,8 +707,13 @@ class CriteriaScorer:
 
         In the B/A run, positions are swapped: what the judge calls "A" is
         actually B, and vice versa. So we flip them back before averaging.
+
+        Returns the merged scores plus the per-position originals.
         """
         merged_A, merged_B = {}, {}
+        # Per-position scores (A/B call = original, B/A call = flipped back)
+        original_A, original_B = {}, {}
+        swapped_A, swapped_B = {}, {}
         for cname in self.criteria.criterion_names:
             # ab: scores_A = actual A, scores_B = actual B
             # ba: scores_A = actual B (swapped), scores_B = actual A (swapped)
@@ -505,6 +724,10 @@ class CriteriaScorer:
 
             merged_A[cname] = float(np.nanmean([a_from_ab, a_from_ba]))
             merged_B[cname] = float(np.nanmean([b_from_ab, b_from_ba]))
+            original_A[cname] = a_from_ab
+            original_B[cname] = b_from_ab
+            swapped_A[cname] = a_from_ba
+            swapped_B[cname] = b_from_ba
 
         # Merge preference: ab.preference is P(B wins in A/B order)
         # ba.preference is P(A-actual wins in B/A order) = P(B wins) in swapped = 1 - P(A wins)
@@ -512,7 +735,13 @@ class CriteriaScorer:
         pref_ba = 1.0 - ba["preference"]  # Flip back
         merged_pref = (pref_ab + pref_ba) / 2.0
 
-        return {"scores_A": merged_A, "scores_B": merged_B, "preference": merged_pref}
+        return {
+            "scores_A": merged_A, "scores_B": merged_B, "preference": merged_pref,
+            "scores_A_original": original_A, "scores_B_original": original_B,
+            "preference_original": pref_ab,
+            "scores_A_swapped": swapped_A, "scores_B_swapped": swapped_B,
+            "preference_swapped": pref_ba,
+        }
 
     # ─────────────────────────────────────────────────────────────
     #  Sample-wise scoring (independent, optional reference anchor)
@@ -562,10 +791,8 @@ class CriteriaScorer:
         if json_match:
             try:
                 scores = json.loads(json_match.group(1))
-                return self._normalize_score_keys(
-                    {k: float(v) for k, v in scores.items()}
-                )
-            except (json.JSONDecodeError, ValueError):
+                return self._coerce_scores_dict(scores)
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         # Fallback: find any JSON object
@@ -573,10 +800,8 @@ class CriteriaScorer:
         if json_match:
             try:
                 scores = json.loads(json_match.group(0))
-                return self._normalize_score_keys(
-                    {k: float(v) for k, v in scores.items()}
-                )
-            except (json.JSONDecodeError, ValueError):
+                return self._coerce_scores_dict(scores)
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         # Last resort: try to parse key: value patterns
@@ -604,11 +829,16 @@ class CriteriaScorer:
         use_tqdm: bool = False,
         force_async: bool = False,
         reference_answers: list[str] | None = None,
-    ) -> list[CriteriaScore]:
+        n_trials: int = 1,
+    ) -> list[CriteriaScore] | list[MultiTrialSamplewiseResult]:
         """Score completions independently (sample-wise) on the criteria.
 
         Each completion is evaluated in isolation. If ``reference_answers``
         is provided, the judge uses them as quality anchors for calibration.
+
+        When ``n_trials > 1``, the judge is called K times per sample and
+        results are aggregated into :class:`MultiTrialSamplewiseResult`
+        objects with per-sample score variance statistics.
 
         Args:
             instructions: List of instructions/prompts.
@@ -618,9 +848,12 @@ class CriteriaScorer:
             force_async: Use async inference for API models.
             reference_answers: Optional list of reference/ground-truth answers
                 to anchor scoring.
+            n_trials: Number of independent judge calls per sample.
+                ``1`` = original behaviour. ``K > 1`` = Average-of-K.
 
         Returns:
-            List of CriteriaScore objects, one per (instruction, completion) pair.
+            ``n_trials == 1``: ``list[CriteriaScore]`` (one per completion).
+            ``n_trials > 1``: ``list[MultiTrialSamplewiseResult]`` with stats.
         """
         assert len(instructions) == len(completions), (
             f"instructions ({len(instructions)}) and completions ({len(completions)}) "
@@ -631,47 +864,106 @@ class CriteriaScorer:
                 f"reference_answers ({len(reference_answers)}) must match "
                 f"instructions ({len(instructions)})"
             )
+        if n_trials < 1:
+            raise ValueError(f"n_trials must be >= 1, got {n_trials}")
 
         prompts = self._build_prompts(instructions, completions, reference_answers)
 
         mode_label = "sample-wise (with reference)" if reference_answers else "sample-wise"
+
+        # ── Single-trial fast path ────────────────────────────────
+        if n_trials == 1:
+            logger.info(
+                "Scoring %d completions from [model]%s[/model] on %d criteria (%s)",
+                len(prompts), model_name, self.criteria.num_criteria, mode_label,
+            )
+
+            raw_outputs = do_inference(
+                chat_model=self.judge_model,
+                inputs=prompts,
+                use_tqdm=use_tqdm,
+                force_async=force_async,
+            )
+
+            results = []
+            for i, raw in enumerate(raw_outputs):
+                raw_text = raw if isinstance(raw, str) else raw.content
+                try:
+                    scores = self._parse_scores(raw_text)
+                except Exception as exc:
+                    logger.warning(
+                        "Unexpected samplewise parse failure for sample %d: %s",
+                        i,
+                        exc,
+                    )
+                    scores = self._nan_scores_dict()
+                results.append(
+                    CriteriaScore(
+                        instruction_index=i,
+                        model=model_name,
+                        scores=scores,
+                        raw_judge_output=raw_text,
+                    )
+                )
+
+            valid_scores = [
+                r
+                for r in results
+                if not any(v != v for v in r.scores.values())
+            ]
+            logger.info(
+                "Successfully parsed %d/%d criteria scores",
+                len(valid_scores),
+                len(results),
+            )
+            return results
+
+        # ── Multi-trial path ──────────────────────────────────────
         logger.info(
-            "Scoring %d completions from [model]%s[/model] on %d criteria (%s)",
-            len(prompts), model_name, self.criteria.num_criteria, mode_label,
+            "Multi-trial scoring: %d completions from [model]%s[/model] "
+            "× %d trials on %d criteria (%s)",
+            len(prompts), model_name, n_trials,
+            self.criteria.num_criteria, mode_label,
         )
 
-        raw_outputs = do_inference(
+        multi_outputs = do_inference_multi(
             chat_model=self.judge_model,
             inputs=prompts,
+            n=n_trials,
             use_tqdm=use_tqdm,
             force_async=force_async,
         )
 
-        results = []
-        for i, raw in enumerate(raw_outputs):
-            raw_text = raw if isinstance(raw, str) else raw.content
-            scores = self._parse_scores(raw_text)
-            results.append(
-                CriteriaScore(
+        multi_results: list[MultiTrialSamplewiseResult] = []
+        for i, trial_outputs in enumerate(multi_outputs):
+            trials: list[CriteriaScore] = []
+            for k, raw_text in enumerate(trial_outputs):
+                try:
+                    scores = self._parse_scores(raw_text)
+                except Exception as exc:
+                    logger.warning(
+                        "Parse failure sample %d trial %d: %s", i, k, exc,
+                    )
+                    scores = self._nan_scores_dict()
+                trials.append(CriteriaScore(
                     instruction_index=i,
                     model=model_name,
                     scores=scores,
                     raw_judge_output=raw_text,
-                )
+                ))
+            multi_results.append(
+                MultiTrialSamplewiseResult.from_trials(i, model_name, trials)
             )
 
-        valid_scores = [
-            r
-            for r in results
-            if not any(v != v for v in r.scores.values())  # NaN check
-        ]
-        logger.info(
-            "Successfully parsed %d/%d criteria scores",
-            len(valid_scores),
-            len(results),
+        valid = sum(
+            1 for r in multi_results
+            if not any(v != v for v in r.mean_scores.values())
         )
-
-        return results
+        logger.info(
+            "Multi-trial samplewise: parsed %d/%d (K=%d)",
+            valid, len(multi_results), n_trials,
+        )
+        return multi_results
 
     # ─────────────────────────────────────────────────────────────
     #  Utilities

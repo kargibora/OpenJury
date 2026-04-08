@@ -174,15 +174,16 @@ OVERALL_CRITERIA_SET = Criteria(
         Criterion(
             name="overall",
             description=(
-                "Overall quality of the response, considering all relevant "
-                "factors. This is a holistic judgment of how well the response "
-                "meets the user's needs and expectations."
+                "Overall quality of the response for this user request. Consider the most "
+                "important aspects such as instruction adherence, usefulness, correctness, "
+                "completeness, and clarity, but provide a single holistic score rather than "
+                "scoring dimensions separately."
             ),
             score_references=_refs(
-                "Excellent response overall; highly effective across all important dimensions.",
-                "Good response overall; useful and solid, with some noticeable weaknesses.",
-                "Weak response overall; partially useful but with significant problems.",
-                "Very poor response overall; fails to meet the user's needs.",
+                "Excellent overall response; highly effective across the most important dimensions.",
+                "Good overall response; useful and solid, with some noticeable weaknesses.",
+                "Weak overall response; partially useful but with significant problems.",
+                "Very poor overall response; fails to meet the user's needs.",
             ),
         )
     ],

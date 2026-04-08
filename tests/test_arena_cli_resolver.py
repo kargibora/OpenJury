@@ -38,6 +38,9 @@ def test_arena_resolver_config_plus_explicit_overrides(tmp_path):
     argv = [
         "--config", str(cfg_path),
         "--judge_max_tokens", "2048",  # explicit default-valued override
+        "--max_model_len", "8192",
+        "--enforce_eager",
+        "--no_swap",
         "--bt_regularization", "0.2",
         "--include_raw_judge",
         "--gen-kwargs", "top_k=11",
@@ -46,6 +49,9 @@ def test_arena_resolver_config_plus_explicit_overrides(tmp_path):
     resolved = resolve_arena_cli(parser, args, argv)
 
     assert resolved.config.judge.max_tokens == 2048
+    assert resolved.config.judge.max_model_len == 8192
+    assert resolved.config.judge.enforce_eager is True
+    assert resolved.config.judge.no_swap is True
     assert resolved.config.bt_regularization == 0.2
     assert resolved.config.include_raw_judge is True
     assert resolved.config.judge.generation_kwargs == {"top_k": 11}

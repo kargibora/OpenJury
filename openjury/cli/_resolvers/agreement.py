@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openjury._logging import logger
-from openjury.arena.config import AgreementConfig, JudgeConfig
+from openjury.arena.config import AgreementConfig
+from openjury.cli._resolvers._judge import (
+    apply_judge_cli_overrides,
+    judge_from_args,
+)
 from openjury.cli._forwarding.slurm import SlurmForwardRequest
 from openjury.cli_args import parse_kwargs
 from openjury.resolution.argparse_overrides import (
@@ -52,27 +56,12 @@ def _apply_agreement_cli_overrides(
             ("balance_by", lambda c, v: setattr(c, "balance_by", v)),
             ("criteria", lambda c, v: setattr(c, "criteria", v)),
             ("truncate_instruction", lambda c, v: setattr(c, "truncate_instruction", v)),
-            ("judge_model", lambda c, v: setattr(c.judge, "model", v)),
-            ("judge_mode", lambda c, v: setattr(c.judge, "mode", v)),
-            ("pairwise_prompt_style", lambda c, v: setattr(c.judge, "pairwise_prompt_style", v)),
-            ("judge_max_tokens", lambda c, v: setattr(c.judge, "max_tokens", v)),
-            ("judge_gpus", lambda c, v: setattr(c.judge, "gpus", v)),
-            ("judge_quantization", lambda c, v: setattr(c.judge, "quantization", v)),
-            ("chat_template", lambda c, v: setattr(c.judge, "chat_template", v)),
-            ("chat_template_file", lambda c, v: setattr(c.judge, "chat_template_file", v)),
         ],
     )
 
     if "ignore_score_cache" in explicit and args.ignore_score_cache:
         config.ignore_score_cache = True
-    if "no_swap" in explicit and args.no_swap:
-        config.judge.no_swap = True
-    if "provide_explanation" in explicit and args.provide_explanation:
-        config.judge.provide_explanation = True
-    if "enable_thinking" in explicit and args.enable_thinking:
-        config.judge.enable_thinking = True
-    if "gen_kwargs" in explicit and gen_kwargs:
-        config.judge.generation_kwargs = gen_kwargs
+    apply_judge_cli_overrides(config, args, explicit, gen_kwargs=gen_kwargs)
 
 
 def resolve_agreement_cli(
@@ -99,21 +88,7 @@ def resolve_agreement_cli(
 
         config = AgreementConfig(
             dataset=args.dataset,
-            judge=JudgeConfig(
-                model=args.judge_model,
-                gpus=args.judge_gpus,
-                mode=args.judge_mode,
-                pairwise_prompt_style=args.pairwise_prompt_style,
-                max_tokens=args.judge_max_tokens,
-                temperature=0.0,
-                quantization=args.judge_quantization,
-                no_swap=args.no_swap,
-                provide_explanation=args.provide_explanation,
-                enable_thinking=True if args.enable_thinking else None,
-                chat_template=args.chat_template,
-                chat_template_file=args.chat_template_file,
-                generation_kwargs=gen_kwargs or {},
-            ),
+            judge=judge_from_args(args, gen_kwargs=gen_kwargs),
             output_dir=args.output_dir,
             n_instructions=args.n_instructions,
             language=args.language,
@@ -131,11 +106,13 @@ def resolve_agreement_cli(
             submit=bool(getattr(args, "submit", False)),
             detach=bool(getattr(args, "detach", False)),
             slurm_output_dir=getattr(args, "slurm_output_dir", "slurm_scripts"),
+            tag=getattr(args, "slurm_tag", None),
             remote=bool(getattr(args, "remote", False)),
             cluster=getattr(args, "cluster", None),
             remote_project_dir=getattr(args, "remote_project_dir", None),
             wait_timeout=getattr(args, "wait_timeout", None),
             stage=args.stage,
+            time_judge=getattr(args, "slurm_time", None),
             warn_output_dir_semantics=(args.output_dir != "results/agreement"),
         )
 

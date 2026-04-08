@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openjury._logging import logger
-from openjury.arena.config import ArenaConfig, JudgeConfig, MatchmakerConfig, ModelEntry
+from openjury.arena.config import ArenaConfig, MatchmakerConfig, ModelEntry
+from openjury.cli._resolvers._judge import (
+    apply_judge_cli_overrides,
+    judge_from_args,
+)
 from openjury.cli._forwarding.slurm import SlurmForwardRequest
 from openjury.cli_args import parse_kwargs
 from openjury.resolution.argparse_overrides import (
@@ -53,14 +57,6 @@ def _apply_arena_cli_overrides(
             ("criteria", lambda c, v: setattr(c, "criteria", v)),
             ("generation_max_tokens", lambda c, v: setattr(c, "generation_max_tokens", v)),
             ("truncate_input_chars", lambda c, v: setattr(c, "truncate_input_chars", v)),
-            ("judge_model", lambda c, v: setattr(c.judge, "model", v)),
-            ("judge_mode", lambda c, v: setattr(c.judge, "mode", v)),
-            ("pairwise_prompt_style", lambda c, v: setattr(c.judge, "pairwise_prompt_style", v)),
-            ("judge_max_tokens", lambda c, v: setattr(c.judge, "max_tokens", v)),
-            ("judge_gpus", lambda c, v: setattr(c.judge, "gpus", v)),
-            ("judge_quantization", lambda c, v: setattr(c.judge, "quantization", v)),
-            ("chat_template", lambda c, v: setattr(c.judge, "chat_template", v)),
-            ("chat_template_file", lambda c, v: setattr(c.judge, "chat_template_file", v)),
             ("matchmaker", lambda c, v: setattr(c.matchmaker, "strategy", v)),
             ("n_matches", lambda c, v: setattr(c.matchmaker, "n_matches", v)),
             ("bt_regularization", lambda c, v: setattr(c, "bt_regularization", v)),
@@ -73,18 +69,11 @@ def _apply_arena_cli_overrides(
         config.ignore_cache = True
     if "ignore_score_cache" in explicit and args.ignore_score_cache:
         config.ignore_score_cache = True
-    if "no_swap" in explicit and args.no_swap:
-        config.judge.no_swap = True
-    if "provide_explanation" in explicit and args.provide_explanation:
-        config.judge.provide_explanation = True
-    if "enable_thinking" in explicit and args.enable_thinking:
-        config.judge.enable_thinking = True
     if "include_completions" in explicit and args.include_completions:
         config.include_completions = True
     if "include_raw_judge" in explicit and args.include_raw_judge:
         config.include_raw_judge = True
-    if "gen_kwargs" in explicit and gen_kwargs:
-        config.judge.generation_kwargs = gen_kwargs
+    apply_judge_cli_overrides(config, args, explicit, gen_kwargs=gen_kwargs)
 
 
 def resolve_arena_cli(
@@ -112,20 +101,7 @@ def resolve_arena_cli(
         config = ArenaConfig(
             dataset=args.dataset,
             models=[ModelEntry(name=m) for m in args.models],
-            judge=JudgeConfig(
-                model=args.judge_model,
-                gpus=args.judge_gpus,
-                mode=args.judge_mode,
-                pairwise_prompt_style=args.pairwise_prompt_style,
-                max_tokens=args.judge_max_tokens,
-                quantization=args.judge_quantization,
-                chat_template=args.chat_template,
-                chat_template_file=args.chat_template_file,
-                provide_explanation=args.provide_explanation,
-                no_swap=args.no_swap,
-                enable_thinking=args.enable_thinking if args.enable_thinking else None,
-                generation_kwargs=gen_kwargs,
-            ),
+            judge=judge_from_args(args, gen_kwargs=gen_kwargs),
             output_dir=args.output_dir,
             n_instructions=args.n_instructions,
             language=args.language,
@@ -153,6 +129,7 @@ def resolve_arena_cli(
             submit=bool(getattr(args, "submit", False)),
             detach=bool(getattr(args, "detach", False)),
             slurm_output_dir=getattr(args, "slurm_output_dir", "slurm_scripts"),
+            tag=getattr(args, "slurm_tag", None),
             remote=bool(getattr(args, "remote", False)),
             cluster=getattr(args, "cluster", None),
             remote_project_dir=getattr(args, "remote_project_dir", None),

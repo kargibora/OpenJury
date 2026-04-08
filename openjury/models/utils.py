@@ -8,7 +8,7 @@ nodes (e.g. for SLURM script generation).
 from __future__ import annotations
 
 # Providers that run locally and need GPUs
-_LOCAL_PROVIDERS = frozenset({"VLLM", "LlamaCpp"})
+_LOCAL_PROVIDERS = frozenset({"VLLM", "SGLang", "LlamaCpp"})
 
 # Providers that call remote APIs (require network access)
 _NETWORK_PROVIDERS = frozenset({"ChatOpenAI", "OpenRouter", "LiteLLM"})
@@ -40,12 +40,12 @@ def provider_from_model(model: str) -> str:
 
 
 def is_local_provider(provider: str) -> bool:
-    """Return True if the provider runs locally on GPU (VLLM, LlamaCpp).
+    """Return True if the provider runs locally on GPU (VLLM, SGLang, LlamaCpp).
 
     Useful for deciding whether to request GPUs in SLURM scripts, or
     whether to skip VLLM-specific flags when building configs.
 
-    Local providers: VLLM, LlamaCpp.
+    Local providers: VLLM, SGLang, LlamaCpp.
     API providers: ChatOpenAI, OpenRouter, LiteLLM, Dummy — no GPUs needed.
     """
     return provider in _LOCAL_PROVIDERS

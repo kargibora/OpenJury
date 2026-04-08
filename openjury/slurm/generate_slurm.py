@@ -56,6 +56,11 @@ Usage::
         --mode agreement \\
         --n_instructions 200
 
+    # Annotate mode: generic challenger-vs-opponent annotation
+    uv run python -m openjury.slurm.generate_slurm \\
+        --mode annotate \\
+        --config configs/annotate/lmsys_gpt-oss20b_qwen3-32b.yaml
+
     # Then submit
     bash slurm_scripts/<run_dir>/submit_all.sh
 
@@ -65,7 +70,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import copy
 import os
 import stat
 from dataclasses import dataclass, field
@@ -74,7 +78,8 @@ from pathlib import Path
 from textwrap import dedent
 
 from openjury._logging import logger
-from openjury.cli_args import add_arena_pipeline_args
+from openjury.arena.config import JudgeConfig, ModelEntry
+from openjury.cli_args import add_arena_pipeline_args, parse_kwargs
 from openjury.models.utils import (
     is_local_provider,
     needs_network,
@@ -82,6 +87,12 @@ from openjury.models.utils import (
 )
 from openjury.slurm import config_resolver as slurm_config_resolver
 from openjury.slurm import modes as slurm_modes
+from openjury.slurm.plans import (
+    GenerateTaskConfig,
+    SlurmExecutionConfig,
+    SlurmRunPlan,
+    TaskConfig,
+)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -96,6 +107,43 @@ def _cli_or_env(cli_val: str | None, env_name: str, default: str | None = None) 
     if cli_val is not None:
         return cli_val
     return _env_mod.get(env_name, default)
+
+
+def _is_project_root(path: Path) -> bool:
+    """Return True when *path* looks like the OpenJury repo root."""
+    return (
+        path.is_dir()
+        and (path / "pyproject.toml").is_file()
+        and (path / "openjury").is_dir()
+    )
+
+
+def _normalize_project_dir(path_str: str) -> str:
+    """Normalize an OpenJury project directory.
+
+    Accepts either the repo root itself or a wrapper directory that contains
+    exactly one immediate child repo root. Raises early if the path still does
+    not resolve to a usable OpenJury project root.
+    """
+    candidate = Path(path_str).expanduser().resolve()
+    if _is_project_root(candidate):
+        return str(candidate)
+
+    child_matches = [child for child in candidate.iterdir() if _is_project_root(child)]
+    if len(child_matches) == 1:
+        resolved = child_matches[0]
+        logger.warning(
+            "Resolved OPENJURY project dir %s -> %s based on nested pyproject/openjury package",
+            candidate,
+            resolved,
+        )
+        return str(resolved)
+
+    raise EnvironmentError(
+        "OPENJURY project dir is not a valid repo root: "
+        f"{candidate}. Expected a directory containing both pyproject.toml "
+        "and openjury/."
+    )
 
 
 def _resolve_gpus(model: str, cli_gpus: int, default_gpus: int) -> int:
@@ -128,235 +176,267 @@ class SlurmJobConfig:
     extra_sbatch: list[str] = field(default_factory=list)
 
 
-@dataclass
-class PipelineConfig:
-    """Evaluation pipeline configuration.
+def _build_pipeline_models(
+    args: argparse.Namespace,
+    *,
+    default_gpus: int,
+) -> list[ModelEntry]:
+    """Build structured pipeline models from CLI args or preserved config payload."""
+    if getattr(args, "model_entries", None):
+        return [ModelEntry.from_raw(model.to_dict()) for model in args.model_entries]
 
-    Three modes:
-
-    - ``generate``: cache completions for one or more models.
-    - ``judge``: run arena judge only (completions must be cached).
-    - ``arena``: K generate jobs → 1 arena judge job (default).
-    - ``agreement``: human-vs-judge agreement on inline-completion datasets.
-
-    Cluster settings are read from CLI flags, environment variables, or
-    a ``.env`` file (in that priority order).  Variables required for the
-    current run that are missing are reported together.
-    """
-    dataset: str
-    judge_model: str = "none"
-    n_instructions: int | None = None
-    criteria: str = "default"
-    generation_max_tokens: int = 4096
-    judge_max_tokens: int = 2048
-    truncate_input_chars: int = 8192
-    provide_explanation: bool = False
-    judge_mode: str = "samplewise"
-    pairwise_prompt_style: str = "criteria"
-    no_swap: bool = False  # disable position-swap debiasing
-    ignore_cache: bool = False  # force regeneration even if completions are cached
-    ignore_score_cache: bool = False  # force re-scoring even if judge scores are cached
-    language: str | None = None  # dataset language/filter (where supported)
-    seed: int = 42  # dataset sub-sampling seed (where supported)
-    balance_by: str | None = None  # metadata field for balanced sub-sampling
-    truncate_instruction: int = 500  # output display truncation (task-specific)
-    stage: str = "all"  # evaluation stage for arena/agreement: all|annotate|analyze
-
-    # ── Judge ───────────────────────────────────────────────────────
-    judge_gpus: int = 1
-    judge_quantization: str | None = None
-    judge_enable_thinking: bool | None = None
-    judge_chat_template: str | None = None
-    judge_chat_template_file: str | None = None
-    judge_local: bool = True
-
-    # ── Models (populated after construction from CLI / config) ─────
-    models: list[str] = field(default_factory=list)
-    model_gpus: list[int] = field(default_factory=list)
-    model_quantizations: list[str | None] = field(default_factory=list)
-    model_local: list[bool] = field(default_factory=list)
-
-    # ── Arena matchmaker ────────────────────────────────────────────
-    matchmaker: str = "round_robin"
-    n_matches: int | None = None
-
-    # ── Run tag (for unique output dirs / job names) ────────────────
-    tag: str = ""
-
-    # ── Cluster settings (from env vars) ────────────────────────────
-    partition: str = ""
-    account: str = ""
-    time_generate: str = ""
-    time_judge: str = ""
-    qos: str = "normal"
-
-    # ── Paths (from env vars) ───────────────────────────────────────
-    project_dir: str = ""      # OpenJury repo root
-    work_dir: str = ""         # Pipeline working directory (auto-set)
-    logs_dir: str = ""         # SLURM logs directory
-    task_config_mode: str | None = None  # "arena"/"agreement"/"generate" when sourced from --config
-    task_config_payload: dict | None = None  # original typed config payload for passthrough
-
-    @property
-    def dataset_options(self):
-        """Shared dataset selection options for loaders/config builders."""
-        from openjury.datasets.options import DatasetOptions
-        return DatasetOptions(
-            name=self.dataset,
-            n_instructions=self.n_instructions,
-            language=self.language,
-            seed=self.seed,
-            balance_by=self.balance_by,
+    model_names = args.models or []
+    model_gpus = (
+        args.model_gpus if args.model_gpus else [default_gpus] * len(model_names)
+    )
+    model_quantizations = [
+        None if quantization == "none" else quantization
+        for quantization in (
+            args.model_quantizations or ["none"] * len(model_names)
         )
-
-    @classmethod
-    def from_env_and_args(
-        cls,
-        args: argparse.Namespace,
-        *,
-        task_payload: slurm_config_resolver.ResolvedTaskConfigPayload | None = None,
-    ) -> PipelineConfig:
-        """Construct from CLI args + environment variables.
-
-        Priority: CLI flag > env var > ``.env`` file.
-        Required variables that are missing are reported together.
-        """
-        # Load .env if present (env vars already set win)
-        _env_mod.load_dotenv()
-
-        # Execution target: local (GPU compute node) vs network (login node)
-        judge_local = (
-            not needs_network(args.judge_model)
-            if args.judge_model and args.judge_model != "none"
-            else False
-        )
-        stage = getattr(args, "stage", "all")
-        mode = getattr(args, "mode", "arena")
-        models = args.models or []
-        any_local_model = any(not needs_network(m) for m in models)
-        run_generate_phase = mode in {"generate", "arena"} and not (
-            mode == "arena" and stage == "analyze"
-        )
-        run_judge_phase = mode in {"judge", "arena", "agreement"}
-        any_slurm_gen = any_local_model and run_generate_phase
-        any_slurm_judge = judge_local and run_judge_phase
-        any_slurm = any_slurm_gen or any_slurm_judge
-
-        # ── Validate required env vars (only those needed) ───────
-        required: list[str] = ["USER_WORK_DIR"]
-        if any_slurm:
-            required += ["ACCOUNT", "PARTITION"]
-        # Only check vars not already supplied via CLI
-        needed = []
-        for var in required:
-            cli_map = {
-                "ACCOUNT": getattr(args, "account", None),
-                "PARTITION": getattr(args, "partition", None),
-            }
-            if var in cli_map and cli_map[var] is not None:
-                continue
-            needed.append(var)
-        _env_mod.check_required(needed)
-
-        # Validate per-job time sources (avoid producing scripts with empty --time=)
-        env_time_limit = _env_mod.get("TIME_LIMIT")
-        needs_generate_time = any_slurm_gen
-        needs_judge_time = any_slurm_judge
-        time_missing_msgs: list[str] = []
-        if needs_generate_time and getattr(args, "time_generate", None) is None and not env_time_limit:
-            time_missing_msgs.append("generation jobs require --time_generate or $TIME_LIMIT")
-        if needs_judge_time and getattr(args, "time_judge", None) is None and not env_time_limit:
-            time_missing_msgs.append("judge/agreement jobs require --time_judge or $TIME_LIMIT")
-        if time_missing_msgs:
-            raise EnvironmentError(
-                "Missing SLURM wall-time configuration:\n  - "
-                + "\n  - ".join(time_missing_msgs)
-            )
-
-        # Resolve cluster settings from CLI / env
-        partition = _cli_or_env(args.partition, "PARTITION") or ""
-        account = _cli_or_env(args.account, "ACCOUNT") or ""
-        time_generate = _cli_or_env(args.time_generate, "TIME_LIMIT") or ""
-        time_judge = _cli_or_env(args.time_judge, "TIME_LIMIT") or ""
-
-        # Resolve paths from env
-        user_work = _env_mod.require("USER_WORK_DIR")
-        slurm_work = _env_mod.get(
-            "SLURM_WORK_DIR", os.path.join(user_work, "slurm_jobs"),
-        )
-
-        # Project dir = OpenJury repo root (auto-detect from this file)
-        _auto_project = str(Path(__file__).resolve().parent.parent.parent)
-        project_dir = _cli_or_env(
-            args.project_dir,
-            "OPENJURY_PROJECT_DIR",
-            _auto_project,
-        )
-
-        # Tag for unique run identification (defaults to timestamp)
-        tag = (
-            getattr(args, "tag", None)
-            or datetime.now().strftime("%Y%m%d_%H%M%S")
-        )
-
-        # Auto-generate work_dir under shared SLURM_WORK_DIR
-        short_models = (
-            "_".join(m.rsplit("/", 1)[-1][:15] for m in models[:3])
-            if models else "unknown"
-        )
-        safe_name = f"{args.dataset}_{short_models}".replace("/", "_")
-        work_dir = os.path.join(slurm_work, "openjury", safe_name, tag)
-
-        # Judge GPU resolution
-        _default_gpus = int(_env_mod.get("GPUS_PER_NODE", "1") or "1")
-        if args.judge_model and args.judge_model != "none":
-            judge_gpus = _resolve_gpus(
-                args.judge_model, args.judge_gpus, _default_gpus,
-            )
-        else:
-            judge_gpus = 0
-
-        return cls(
-            dataset=args.dataset,
-            judge_model=args.judge_model,
-            criteria=getattr(args, "criteria", "default"),
-            n_instructions=args.n_instructions,
-            generation_max_tokens=args.generation_max_tokens,
-            judge_max_tokens=args.judge_max_tokens,
-            truncate_input_chars=args.truncate_input_chars,
-            provide_explanation=args.provide_explanation,
-            judge_mode=getattr(args, "judge_mode", "samplewise"),
-            pairwise_prompt_style=getattr(args, "pairwise_prompt_style", "criteria"),
-            no_swap=getattr(args, "no_swap", False),
-            ignore_cache=getattr(args, "ignore_cache", False),
-            ignore_score_cache=getattr(args, "ignore_score_cache", False),
-            language=getattr(args, "language", None),
-            seed=getattr(args, "seed", 42),
-            balance_by=getattr(args, "balance_by", None),
-            truncate_instruction=getattr(args, "truncate_instruction", 500),
-            stage=stage,
-            judge_gpus=judge_gpus,
-            judge_quantization=args.judge_quantization,
-            judge_enable_thinking=getattr(args, "enable_thinking", False) or None,
-            judge_chat_template=getattr(args, "chat_template", None),
-            judge_chat_template_file=getattr(args, "chat_template_file", None),
-            judge_local=judge_local,
-            tag=tag,
-            partition=partition,
-            account=account,
-            time_generate=time_generate,
-            time_judge=time_judge,
-            qos=getattr(args, "qos", "normal"),
-            project_dir=project_dir,
-            work_dir=work_dir,
-            logs_dir="",  # set later by generate_pipeline_scripts
-            task_config_mode=(task_payload.kind if task_payload else None),
-            task_config_payload=(
-                copy.deepcopy(task_payload.payload)
-                if task_payload and task_payload.payload is not None
+    ]
+    return [
+        ModelEntry(
+            name=model_name,
+            gpus=model_gpus[idx] if idx < len(model_gpus) else default_gpus,
+            quantization=(
+                model_quantizations[idx]
+                if idx < len(model_quantizations)
                 else None
             ),
         )
+        for idx, model_name in enumerate(model_names)
+    ]
+
+
+def _build_judge_config(
+    args: argparse.Namespace,
+    *,
+    default_gpus: int,
+) -> JudgeConfig:
+    """Build a typed judge config from resolved CLI/config args."""
+    if args.judge_model and args.judge_model != "none":
+        judge_gpus = _resolve_gpus(
+            args.judge_model,
+            args.judge_gpus,
+            default_gpus,
+        )
+    else:
+        judge_gpus = 0
+
+    return JudgeConfig(
+        model=args.judge_model or "none",
+        gpus=judge_gpus,
+        mode=getattr(args, "judge_mode", "samplewise"),
+        pairwise_prompt_style=getattr(args, "pairwise_prompt_style", "criteria"),
+        max_tokens=getattr(args, "judge_max_tokens", 2048),
+        quantization=getattr(args, "judge_quantization", None),
+        no_swap=getattr(args, "no_swap", False),
+        provide_explanation=getattr(args, "provide_explanation", False),
+        enable_thinking=getattr(args, "enable_thinking", False) or None,
+        chat_template=getattr(args, "chat_template", None),
+        chat_template_file=getattr(args, "chat_template_file", None),
+        max_model_len=(
+            getattr(args, "max_model_len", None)
+            if getattr(args, "max_model_len", None) is not None
+            else getattr(args, "judge_max_model_len", None)
+        ),
+        enforce_eager=bool(
+            getattr(args, "enforce_eager", False)
+            or getattr(args, "judge_enforce_eager", False)
+        ),
+        temperature=getattr(args, "judge_temperature", 0.0),
+        top_p=getattr(args, "judge_top_p", 1.0),
+        n_trials=getattr(args, "judge_n_trials", 1),
+        generation_kwargs=parse_kwargs(getattr(args, "gen_kwargs", None)),
+    )
+
+
+def _build_task_config(
+    args: argparse.Namespace,
+    *,
+    default_gpus: int,
+) -> TaskConfig:
+    """Build the typed task config for the requested SLURM mode."""
+    from openjury.annotate_config import AnnotateConfig
+    from openjury.arena.config import AgreementConfig, ArenaConfig, MatchmakerConfig
+
+    model_entries = _build_pipeline_models(args, default_gpus=default_gpus)
+    mode = getattr(args, "mode", "arena")
+
+    if mode == "generate":
+        return GenerateTaskConfig(
+            dataset=args.dataset,
+            models=model_entries,
+            n_instructions=args.n_instructions,
+            language=getattr(args, "language", None),
+            seed=getattr(args, "seed", 42),
+            balance_by=getattr(args, "balance_by", None),
+            generation_max_tokens=args.generation_max_tokens,
+            truncate_input_chars=args.truncate_input_chars,
+            ignore_cache=getattr(args, "ignore_cache", False),
+        )
+
+    if mode == "annotate":
+        if not getattr(args, "config", None):
+            raise SystemExit(
+                "Annotate mode currently requires --config when using openjury-slurm."
+            )
+        return AnnotateConfig.load(args.config)
+
+    judge = _build_judge_config(args, default_gpus=default_gpus)
+
+    if mode == "agreement":
+        return AgreementConfig(
+            dataset=args.dataset,
+            judge=judge,
+            n_instructions=args.n_instructions,
+            language=getattr(args, "language", None),
+            seed=getattr(args, "seed", 42),
+            balance_by=getattr(args, "balance_by", None),
+            criteria=getattr(args, "criteria", "default"),
+            ignore_score_cache=getattr(args, "ignore_score_cache", False),
+            truncate_instruction=getattr(args, "truncate_instruction", 500),
+        )
+
+    return ArenaConfig(
+        dataset=args.dataset,
+        models=model_entries,
+        judge=judge,
+        n_instructions=args.n_instructions,
+        language=getattr(args, "language", None),
+        seed=getattr(args, "seed", 42),
+        balance_by=getattr(args, "balance_by", None),
+        criteria=getattr(args, "criteria", "default"),
+        matchmaker=MatchmakerConfig(
+            strategy=getattr(args, "matchmaker", "round_robin"),
+            n_matches=getattr(args, "n_matches", None),
+        ),
+        generation_max_tokens=args.generation_max_tokens,
+        truncate_input_chars=args.truncate_input_chars,
+        ignore_cache=getattr(args, "ignore_cache", False),
+        ignore_score_cache=getattr(args, "ignore_score_cache", False),
+        bt_regularization=getattr(args, "bt_regularization", 0.01),
+        elo_k=getattr(args, "elo_k", 32.0),
+        include_completions=getattr(args, "include_completions", False),
+        include_raw_judge=getattr(args, "include_raw_judge", False),
+    )
+
+
+def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
+    """Construct a typed SLURM run plan from CLI args plus environment variables."""
+    _env_mod.load_dotenv()
+
+    default_gpus = int(_env_mod.get("GPUS_PER_NODE", "1") or "1")
+    task = _build_task_config(args, default_gpus=default_gpus)
+    model_names = [model.name for model in getattr(task, "models", [])]
+    challenger = getattr(task, "challenger", None)
+    challenger_model = getattr(challenger, "name", None)
+    if not model_names and challenger_model:
+        model_names = [challenger_model]
+    judge_model = getattr(getattr(task, "judge", None), "model", None)
+
+    judge_local = (
+        not needs_network(judge_model)
+        if judge_model and judge_model != "none"
+        else False
+    )
+    challenger_local = (
+        not needs_network(challenger_model)
+        if challenger_model
+        else False
+    )
+    stage = getattr(args, "stage", "all")
+    mode = getattr(args, "mode", "arena")
+    any_local_model = any(not needs_network(model.name) for model in getattr(task, "models", []))
+    run_annotate_phase = mode == "annotate"
+    annotate_generation_needed = bool(
+        run_annotate_phase
+        and challenger_model
+        and not getattr(challenger, "completions", None)
+    )
+    run_generate_phase = (
+        mode in {"generate", "arena"} and not (mode == "arena" and stage == "analyze")
+    ) or annotate_generation_needed
+    run_judge_phase = mode in {"judge", "arena", "agreement", "annotate"}
+    any_slurm_gen = (any_local_model and mode in {"generate", "arena"} and not (
+        mode == "arena" and stage == "analyze"
+    )) or (annotate_generation_needed and challenger_local)
+    any_slurm_judge = judge_local and run_judge_phase
+    any_slurm = any_slurm_gen or any_slurm_judge
+
+    required: list[str] = ["USER_WORK_DIR"]
+    if any_slurm:
+        required += ["ACCOUNT", "PARTITION"]
+    needed = []
+    for var in required:
+        cli_map = {
+            "ACCOUNT": getattr(args, "account", None),
+            "PARTITION": getattr(args, "partition", None),
+        }
+        if var in cli_map and cli_map[var] is not None:
+            continue
+        needed.append(var)
+    _env_mod.check_required(needed)
+
+    env_time_limit = _env_mod.get("TIME_LIMIT")
+    needs_generate_time = any_slurm_gen
+    needs_judge_time = any_slurm_judge
+    time_missing_msgs: list[str] = []
+    if needs_generate_time and getattr(args, "time_generate", None) is None and not env_time_limit:
+        time_missing_msgs.append("generation jobs require --time_generate or $TIME_LIMIT")
+    if needs_judge_time and getattr(args, "time_judge", None) is None and not env_time_limit:
+        time_missing_msgs.append(
+            "judge/agreement/annotate jobs require --time_judge or $TIME_LIMIT"
+        )
+    if time_missing_msgs:
+        raise EnvironmentError(
+            "Missing SLURM wall-time configuration:\n  - "
+            + "\n  - ".join(time_missing_msgs)
+        )
+
+    partition = _cli_or_env(args.partition, "PARTITION") or ""
+    account = _cli_or_env(args.account, "ACCOUNT") or ""
+    time_generate = _cli_or_env(args.time_generate, "TIME_LIMIT") or ""
+    time_judge = _cli_or_env(args.time_judge, "TIME_LIMIT") or ""
+
+    user_work = _env_mod.require("USER_WORK_DIR")
+    slurm_work = _env_mod.get(
+        "SLURM_WORK_DIR", os.path.join(user_work, "slurm_jobs"),
+    )
+
+    auto_project = str(Path(__file__).resolve().parent.parent.parent)
+    project_dir = _cli_or_env(
+        args.project_dir,
+        "OPENJURY_PROJECT_DIR",
+        auto_project,
+    )
+    project_dir = _normalize_project_dir(project_dir)
+
+    tag = getattr(args, "tag", None) or datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_models = (
+        "_".join(model.rsplit("/", 1)[-1][:15] for model in model_names[:3])
+        if model_names
+        else "unknown"
+    )
+    safe_name = f"{task.dataset}_{short_models}".replace("/", "_")
+    work_dir = os.path.join(slurm_work, "openjury", safe_name, tag)
+
+    execution = SlurmExecutionConfig(
+        mode=mode,
+        stage=stage,
+        judge_local=judge_local,
+        tag=tag,
+        partition=partition,
+        account=account,
+        time_generate=time_generate,
+        time_judge=time_judge,
+        qos=getattr(args, "qos", "normal"),
+        project_dir=project_dir,
+        work_dir=work_dir,
+        logs_dir="",
+    )
+    return SlurmRunPlan(task=task, execution=execution)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -369,20 +449,15 @@ class PipelineConfig:
 
 
 def generate_pipeline_scripts(
-    pipeline: PipelineConfig,
+    plan: SlurmRunPlan,
     output_dir: Path,
-    mode: str = "arena",
     on_missing_completions: str = "error",
 ) -> list[Path]:
     """Generate all SLURM scripts for the evaluation pipeline.
 
     Args:
-        pipeline: Full pipeline configuration.
+        plan: Typed SLURM run plan.
         output_dir: Directory to write scripts into.
-        mode: ``"generate"`` = completions only for one or more models;
-              ``"judge"`` = arena judge only (completions must be cached);
-              ``"arena"`` = K generate jobs + 1 arena judge job (default);
-              ``"agreement"`` = one agreement evaluation job.
         on_missing_completions: ``"error"`` = abort if any model is
             missing cached completions (judge mode only).
             ``"skip"`` = warn and let ``arena_step`` resolve on the fly.
@@ -394,10 +469,10 @@ def generate_pipeline_scripts(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # SLURM log files (.out / .err) go in the same directory as the scripts
-    pipeline.logs_dir = str(output_dir)
+    plan.execution.logs_dir = str(output_dir)
 
     generated: list[Path] = []
-    tag_suffix = f"_{pipeline.tag[:12]}" if pipeline.tag else ""
+    tag_suffix = f"_{plan.execution.tag[:12]}" if plan.execution.tag else ""
 
     def _write(path: Path, content: str) -> Path:
         path.write_text(content)
@@ -405,9 +480,11 @@ def generate_pipeline_scripts(
         generated.append(path)
         return path
 
+    mode = plan.execution.mode
+
     if mode == "generate":
         slurm_modes.generate_mode_scripts(
-            pipeline=pipeline,
+            plan=plan,
             output_dir=output_dir,
             tag_suffix=tag_suffix,
             write_script=_write,
@@ -415,7 +492,7 @@ def generate_pipeline_scripts(
         )
     elif mode == "judge":
         slurm_modes.judge_mode_scripts(
-            pipeline=pipeline,
+            plan=plan,
             output_dir=output_dir,
             tag_suffix=tag_suffix,
             write_script=_write,
@@ -425,7 +502,7 @@ def generate_pipeline_scripts(
         )
     elif mode == "arena":
         slurm_modes.arena_mode_scripts(
-            pipeline=pipeline,
+            plan=plan,
             output_dir=output_dir,
             tag_suffix=tag_suffix,
             write_script=_write,
@@ -434,7 +511,16 @@ def generate_pipeline_scripts(
         )
     elif mode == "agreement":
         slurm_modes.agreement_mode_scripts(
-            pipeline=pipeline,
+            plan=plan,
+            output_dir=output_dir,
+            tag_suffix=tag_suffix,
+            write_script=_write,
+            job_factory=SlurmJobConfig,
+            generated_files=generated,
+        )
+    elif mode == "annotate":
+        slurm_modes.annotate_mode_scripts(
+            plan=plan,
             output_dir=output_dir,
             tag_suffix=tag_suffix,
             write_script=_write,
@@ -560,7 +646,7 @@ def main(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--mode",
-        choices=["generate", "arena", "judge", "agreement"],
+        choices=["generate", "arena", "judge", "agreement", "annotate"],
         default="arena",
         help="Pipeline mode: "
              "'arena' (default) = K generate jobs + 1 arena judge job. "
@@ -569,6 +655,7 @@ def main(argv: list[str] | None = None):
              "are already cached). "
              "'agreement' = human-vs-judge agreement on datasets with "
              "inline completions/human prefs. "
+             "'annotate' = generic annotation from an annotate config. "
              "API judges run on login node (no SLURM job), GPU judges use sbatch. "
     )
     parser.add_argument(
@@ -578,7 +665,7 @@ def main(argv: list[str] | None = None):
         help=(
             "Evaluation stage for --mode arena/agreement: "
             "'all' (default), 'annotate', or 'analyze'. "
-            "Not used for --mode generate/judge."
+            "Not used for --mode generate/judge/annotate."
         ),
     )
     
@@ -641,52 +728,28 @@ def main(argv: list[str] | None = None):
         parser.error("--detach is not supported with --remote.")
 
     explicit_dests = slurm_config_resolver.collect_explicit_dests(parser, argv)
-    resolved_task_payload = slurm_config_resolver.resolve_args_from_config(
+    slurm_config_resolver.resolve_args_from_config(
         args,
         explicit_dests=explicit_dests,
     )
     slurm_config_resolver.validate_mode_args(parser, args)
 
-    # ── Build PipelineConfig ─────────────────────────────────────
-    config = PipelineConfig.from_env_and_args(args, task_payload=resolved_task_payload)
-
-    # Populate model lists
-    config.models = args.models
-    config.model_gpus = (
-        args.model_gpus if args.model_gpus
-        else [_default_gpus] * len(args.models)
-    )
-    config.model_quantizations = [
-        None if q == "none" else q
-        for q in (args.model_quantizations or ["none"] * len(args.models))
-    ]
-    config.model_local = [not needs_network(m) for m in args.models]
-    config.matchmaker = getattr(args, "matchmaker", "round_robin")
-    config.n_matches = getattr(args, "n_matches", None)
-
-    # Auto-detect judge GPU needs (API judges don't need GPUs)
-    if (
-        args.judge_model
-        and args.judge_model != "none"
-        and not is_local_provider(provider_from_model(args.judge_model))
-    ):
-        config.judge_gpus = 0
-
+    # ── Build typed SLURM run plan ───────────────────────────────
+    plan = build_run_plan_from_env_and_args(args)
 
     # ── Build a unique per-run subfolder ─────────────────────────
-    run_name = f"{config.dataset}_{args.mode}_{config.tag}".replace("/", "_")
+    run_name = f"{plan.dataset}_{args.mode}_{plan.execution.tag}".replace("/", "_")
     run_dir = (Path(args.output_dir) / run_name).resolve()
 
     # If output_dir was overridden by config, also redirect work_dir
     # so logs, results, and scripts all live together
     if args.output_dir != "slurm_scripts":
-        config.work_dir = str(run_dir)
+        plan.execution.work_dir = str(run_dir)
 
 
     scripts = generate_pipeline_scripts(
-        pipeline=config,
+        plan=plan,
         output_dir=run_dir,
-        mode=args.mode,
         on_missing_completions=getattr(args, "on_missing_completions", "error"),
     )
 
@@ -727,7 +790,7 @@ def main(argv: list[str] | None = None):
         )
         judge_scripts = [
             s for s in scripts
-            if "arena_judge" in s.name or "agreement" in s.name or "judge" in s.name
+            if "arena_judge" in s.name or "agreement" in s.name or "annotate" in s.name or "judge" in s.name
         ]
         judge_script = judge_scripts[0] if judge_scripts else None
 
@@ -753,9 +816,9 @@ def main(argv: list[str] | None = None):
             gen_scripts=gen_scripts,
             gen_locals=gen_locals,
             judge_script=judge_script,
-            judge_local=config.judge_local,
+            judge_local=plan.execution.judge_local,
             cluster=cluster_name,
-            project_dir=config.project_dir,
+            project_dir=plan.execution.project_dir,
             remote_project_dir=args.remote_project_dir,
             wait=True,
             wait_timeout=args.wait_timeout,

@@ -1,0 +1,28 @@
+dataset: lmsys
+n_instructions: 500
+seed: 42
+balance_by: models
+
+judge:
+  model: VLLM/Qwen/Qwen3-32B
+  gpus: 4
+  mode: pairwise
+  max_model_len: 16384
+  enforce_eager: true
+
+criteria: default
+
+pairing:
+  source: dataset_pairs
+  strategy: dataset_defined
+
+generation:
+  max_tokens: 4096
+  truncate_input_chars: 8192
+  ignore_cache: false
+  gpu_memory_utilization: 0.9
+  ignore_score_cache: false
+
+output_dir: results/annotate/lmsys_dataset_pairs_qwen3-32b
+include_completions: false
+include_raw_judge: false

@@ -1,18 +1,219 @@
-"""LMSys Arena human-preference dataset loader.
+"""LMSYS / LM Arena human-preference dataset loaders.
 
-Converts the LMSys Arena 100k dataset into :class:`EvalSample` objects
-with pre-existing completions and human preference labels.
+Supports both the original 100k preference dataset and the newer 140k
+variant under separate dataset names:
+
+- ``lmsys`` -> ``lmarena-ai/arena-human-preference-100k``
+- ``lmsys-140k`` -> ``lmarena-ai/arena-human-preference-140k``
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from openjury._logging import logger
 from openjury.datasets.registry import DatasetRegistry
 from openjury.datasets.schema import EvalDataset, EvalSample
+
+_REPO_100K = "lmarena-ai/arena-human-preference-100k"
+_REPO_140K = "lmarena-ai/arena-human-preference-140k"
+
+_LANG_NAME_TO_ISO = {
+    "english": "en",
+    "russian": "ru",
+    "chinese": "zh",
+    "french": "fr",
+    "german": "de",
+    "spanish": "es",
+    "italian": "it",
+    "portuguese": "pt",
+    "japanese": "ja",
+    "korean": "ko",
+    "arabic": "ar",
+    "dutch": "nl",
+    "polish": "pl",
+    "turkish": "tr",
+    "vietnamese": "vi",
+    "czech": "cs",
+    "romanian": "ro",
+    "ukrainian": "uk",
+    "greek": "el",
+    "hebrew": "he",
+    "hindi": "hi",
+    "indonesian": "id",
+    "persian": "fa",
+    "thai": "th",
+    "swedish": "sv",
+    "danish": "da",
+    "finnish": "fi",
+    "norwegian": "no",
+    "hungarian": "hu",
+}
+
+
+def _normalize_lang(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in _LANG_NAME_TO_ISO:
+        return _LANG_NAME_TO_ISO[lowered]
+    return lowered
+
+
+def _flatten_content(content: Any) -> str:
+    """Flatten LM Arena content blocks into plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [_flatten_content(item) for item in content]
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        if isinstance(content.get("text"), str):
+            return content["text"].strip()
+        if "content" in content:
+            return _flatten_content(content["content"])
+        if isinstance(content.get("value"), str):
+            return content["value"].strip()
+    return ""
+
+
+def _extract_turn_text(turn: Any) -> str:
+    if isinstance(turn, dict):
+        return _flatten_content(turn.get("content"))
+    return _flatten_content(turn)
+
+
+def _extract_instruction(conv: list[Any]) -> str:
+    for turn in conv:
+        text = _extract_turn_text(turn)
+        if text:
+            return text
+    return ""
+
+
+def _extract_completion(conv: list[Any]) -> str:
+    if len(conv) > 1:
+        text = _extract_turn_text(conv[1])
+        if text:
+            return text
+    for turn in conv[1:]:
+        text = _extract_turn_text(turn)
+        if text:
+            return text
+    return ""
+
+
+def _winner_to_pref(winner: Any) -> float:
+    label = str(winner or "tie").lower()
+    if "model_a" in label:
+        return 0.0
+    if "model_b" in label:
+        return 1.0
+    return 0.5
+
+
+def _load_lmsys_repo(
+    *,
+    repo_id: str,
+    dataset_name: str,
+    source_name: str,
+    n: int | None = None,
+    language: str | None = None,
+    single_turn_only: bool = True,
+    seed: int = 42,
+) -> EvalDataset:
+    from huggingface_hub import snapshot_download
+
+    logger.info("Loading %s from %s …", dataset_name, repo_id)
+    repo_path = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        allow_patterns="*.parquet",
+    )
+
+    parquets = list(Path(repo_path).rglob("*.parquet"))
+    if not parquets:
+        raise FileNotFoundError(f"No parquet files found in {repo_path}.")
+    df = pd.concat([pd.read_parquet(p) for p in parquets], ignore_index=True)
+
+    if single_turn_only and "conversation_a" in df.columns:
+        df = df[df["conversation_a"].apply(lambda c: len(c) <= 2)]
+
+    if language and "language" in df.columns:
+        lang_code = _normalize_lang(language)
+        before = len(df)
+        df = df[df["language"].apply(_normalize_lang) == lang_code]
+        logger.info(
+            "Language filter (%s): %d → %d samples",
+            language,
+            before,
+            len(df),
+        )
+
+    if n is not None and len(df) > n:
+        df = df.sample(n=n, random_state=seed)
+
+    def _to_list(val):
+        """Safely convert a value to a Python list (handles numpy arrays)."""
+        if val is None:
+            return []
+        if hasattr(val, "tolist"):  # numpy array
+            return val.tolist()
+        if isinstance(val, list):
+            return val
+        return list(val) if hasattr(val, "__iter__") else []
+
+    samples: list[EvalSample] = []
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        conv_a = _to_list(row.get("conversation_a"))
+        conv_b = _to_list(row.get("conversation_b"))
+
+        instruction = _extract_instruction(conv_a)
+        comp_a = _extract_completion(conv_a)
+        comp_b = _extract_completion(conv_b)
+
+        model_a = str(row.get("model_a", ""))
+        model_b = str(row.get("model_b", ""))
+        sample_id = str(row.get("question_id") or row.get("id") or row_idx)
+        row_lang = _normalize_lang(row.get("language"))
+
+        samples.append(
+            EvalSample(
+                instruction=instruction,
+                instruction_id=f"{dataset_name}-{sample_id}",
+                metadata={
+                    "lang": row_lang,
+                    "source": source_name,
+                    "model_a": model_a,
+                    "model_b": model_b,
+                    "original_question_id": sample_id,
+                },
+                completions={model_a: comp_a, model_b: comp_b},
+                human_pref=_winner_to_pref(row.get("winner")),
+            )
+        )
+
+    logger.info("Loaded %d %s samples (lang=%s)", len(samples), dataset_name, language)
+
+    return EvalDataset(
+        name=dataset_name,
+        samples=samples,
+        metadata_schema={
+            "lang": "Detected language (ISO-639-1 when available)",
+            "source": f"Dataset source (always '{source_name}')",
+            "model_a": "Name of model A",
+            "model_b": "Name of model B",
+            "original_question_id": "Original Arena question/evaluation ID",
+        },
+    )
 
 
 @DatasetRegistry.register("lmsys")
@@ -24,128 +225,34 @@ def load_lmsys(
     seed: int = 42,
     **_kwargs,
 ) -> EvalDataset:
-    """Load LMSys Arena 100k human-preference samples.
-
-    Metadata per sample:
-        - ``lang`` — detected language (ISO-639-1).
-        - ``source`` — always ``"lmsys"``.
-        - ``model_a`` / ``model_b`` — the two models being compared.
-        - ``original_question_id`` — original dataset question ID.
-
-    Each sample carries:
-        - ``completions``: ``{"model_a_name": text, "model_b_name": text}``
-        - ``human_pref``: 0.0 = A wins, 0.5 = tie, 1.0 = B wins
-
-    Args:
-        n: Maximum number of samples.
-        language: ISO-639-1 code for language filtering (requires
-            ``fast-langdetect``).
-        single_turn_only: Drop multi-turn conversations.
-        seed: Random seed for sub-sampling.
-
-    Returns:
-        :class:`EvalDataset` with completions and human preferences.
-    """
-    from huggingface_hub import snapshot_download
-
-    logger.info("Loading LMSys Arena dataset …")
-    repo_path = snapshot_download(
-        repo_id="lmarena-ai/arena-human-preference-100k",
-        repo_type="dataset",
-        allow_patterns="*.parquet",
+    """Load LMSYS Arena 100k human-preference samples."""
+    return _load_lmsys_repo(
+        repo_id=_REPO_100K,
+        dataset_name="lmsys",
+        source_name="lmsys",
+        n=n,
+        language=language,
+        single_turn_only=single_turn_only,
+        seed=seed,
     )
 
-    parquets = list(Path(repo_path).rglob("*.parquet"))
-    if not parquets:
-        raise FileNotFoundError(
-            f"No parquet files found in {repo_path}."
-        )
-    df = pd.concat([pd.read_parquet(p) for p in parquets], ignore_index=True)
 
-    # ── Filter single-turn ───────────────────────────────────────
-    if single_turn_only and "conversation_a" in df.columns:
-        df = df[df["conversation_a"].apply(lambda c: len(c) <= 2)]
-
-    # ── Language filter ──────────────────────────────────────────
-    if language:
-        # Map ISO-639-1 codes to the full names used in the dataset
-        _LANG_MAP = {
-            "en": "English", "ru": "Russian", "zh": "Chinese",
-            "fr": "French", "de": "German", "es": "Spanish",
-            "it": "Italian", "pt": "Portuguese", "ja": "Japanese",
-            "ko": "Korean", "ar": "Arabic", "nl": "Dutch",
-            "pl": "Polish", "tr": "Turkish", "vi": "Vietnamese",
-            "cs": "Czech", "ro": "Romanian", "uk": "Ukrainian",
-            "el": "Greek", "he": "Hebrew", "hi": "Hindi",
-            "id": "Indonesian", "fa": "Persian", "th": "Thai",
-            "sv": "Swedish", "da": "Danish", "fi": "Finnish",
-            "no": "Norwegian", "hu": "Hungarian",
-        }
-        if "language" in df.columns:
-            lang_full = _LANG_MAP.get(language, language)
-            before = len(df)
-            df = df[df["language"].str.lower() == lang_full.lower()]
-            logger.info(
-                "Language filter (%s → %s): %d → %d samples",
-                language, lang_full, before, len(df),
-            )
-        else:
-            logger.warning(
-                "No 'language' column in dataset — skipping language filter"
-            )
-
-    # ── Sub-sample ───────────────────────────────────────────────
-    if n is not None and len(df) > n:
-        df = df.sample(n=n, random_state=seed)
-
-    # ── Build samples ────────────────────────────────────────────
-    samples: list[EvalSample] = []
-    for row_idx, (_, row) in enumerate(df.iterrows()):
-        conv_a = row.get("conversation_a", [])
-        conv_b = row.get("conversation_b", [])
-        instruction = conv_a[0]["content"] if len(conv_a) > 0 else ""
-        comp_a = conv_a[1]["content"] if len(conv_a) > 1 else ""
-        comp_b = conv_b[1]["content"] if len(conv_b) > 1 else ""
-
-        winner = str(row.get("winner", "tie")).lower()
-        if "model_a" in winner:
-            pref = 0.0
-        elif "model_b" in winner:
-            pref = 1.0
-        else:
-            pref = 0.5
-
-        model_a = str(row.get("model_a", ""))
-        model_b = str(row.get("model_b", ""))
-        question_id = str(row.get("question_id", row_idx))
-
-        # Use per-row language from dataset, not the filter parameter
-        row_lang = str(row.get("language", "")).strip() if "language" in row.index else None
-
-        samples.append(EvalSample(
-            instruction=instruction,
-            instruction_id=f"lmsys-{question_id}",
-            metadata={
-                "lang": row_lang,
-                "source": "lmsys",
-                "model_a": model_a,
-                "model_b": model_b,
-                "original_question_id": question_id,
-            },
-            completions={model_a: comp_a, model_b: comp_b},
-            human_pref=pref,
-        ))
-
-    logger.info("Loaded %d LMSys samples (lang=%s)", len(samples), language)
-
-    return EvalDataset(
-        name="lmsys",
-        samples=samples,
-        metadata_schema={
-            "lang": "Detected language (ISO-639-1)",
-            "source": "Dataset source (always 'lmsys')",
-            "model_a": "Name of model A",
-            "model_b": "Name of model B",
-            "original_question_id": "Original LMSys question ID",
-        },
+@DatasetRegistry.register("lmsys-140k")
+def load_lmsys_140k(
+    *,
+    n: int | None = None,
+    language: str | None = None,
+    single_turn_only: bool = True,
+    seed: int = 42,
+    **_kwargs,
+) -> EvalDataset:
+    """Load LM Arena 140k human-preference samples."""
+    return _load_lmsys_repo(
+        repo_id=_REPO_140K,
+        dataset_name="lmsys-140k",
+        source_name="lmsys-140k",
+        n=n,
+        language=language,
+        single_turn_only=single_turn_only,
+        seed=seed,
     )

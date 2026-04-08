@@ -1,31 +1,28 @@
-"""Arena pipeline orchestration (generate/annotate/analyze)."""
+"""Arena pipeline orchestration over canonical annotate.
+
+The pipeline produces a reusable annotation artifact; analysis is
+performed post-hoc via separate scripts.
+"""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from openjury._logging import logger
-from openjury.arena.arena_judge import ArenaJudge
+from openjury.annotate_config import (
+    AnnotateConfig,
+    AnnotateGenerationConfig,
+    AnnotatePairingConfig,
+)
 from openjury.arena.config import (
     ArenaConfig,
-    ArenaResult,
     MatchResult,
     ModelScore,
     ModelEntry,
 )
-from openjury.arena.matchmaker import get_matchmaker
-from openjury.cache.completions import cache
-from openjury.datasets import load_dataset
-from openjury.pipelines.generation import generate_instructions
-from openjury.models.factory import make_model
-from openjury.criteria import get_criteria
-from openjury.cache.scores import score_cache
-from openjury.analysis.arena import analyze_arena_annotations as analyze_arena_stage
-from openjury.pipelines.annotate import load_arena_annotations, save_arena_annotations
+from openjury.pipelines.model_annotation import run_annotate
+from openjury.pipelines.annotate import save_arena_annotations
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -33,150 +30,71 @@ from openjury.pipelines.annotate import load_arena_annotations, save_arena_annot
 # ═════════════════════════════════════════════════════════════════════
 
 
-def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
-    """Run generation + judging and return annotation payload for analysis."""
-    criteria = _load_criteria(config.criteria)
-
-    ds_opts = config.dataset_options
-    cache_dataset = ds_opts.cache_key()
-    dataset = load_dataset(ds_opts.name, n=ds_opts.n_instructions, **ds_opts.loader_kwargs())
-    instructions = dataset.instructions
-    instruction_ids = dataset.instruction_ids
-    instruction_metadata = [s.metadata for s in dataset.samples]
-    n = len(instructions)
-    logger.info("Loaded %d instructions from %s", n, config.dataset)
-
-    instructions_series = pd.Series(instructions, name="instruction")
-    completions = _resolve_completions(
-        models=config.models,
-        dataset=cache_dataset,
+def _arena_to_annotate_config(config: ArenaConfig) -> AnnotateConfig:
+    """Project an arena task onto the canonical annotate(matchmaker) path."""
+    return AnnotateConfig(
+        dataset=config.dataset,
+        judge=config.judge,
+        challenger=None,
+        models=[ModelEntry.from_raw(model.to_dict()) for model in config.models],
+        output_dir=config.output_dir,
         n_instructions=config.n_instructions,
-        instructions=instructions_series,
-        generation_max_tokens=config.generation_max_tokens,
-        truncate_input_chars=config.truncate_input_chars,
-        ignore_cache=config.ignore_cache,
+        language=config.language,
+        seed=config.seed,
+        balance_by=config.balance_by,
+        criteria=config.criteria,
+        pairing=AnnotatePairingConfig(
+            source="matchmaker",
+            strategy=config.matchmaker.strategy,
+            seed=config.seed,
+            n_matches=config.matchmaker.n_matches,
+        ),
+        generation=AnnotateGenerationConfig(
+            max_tokens=config.generation_max_tokens,
+            truncate_input_chars=config.truncate_input_chars,
+            ignore_cache=config.ignore_cache,
+        ),
+        ignore_score_cache=config.ignore_score_cache,
+        include_completions=config.include_completions,
+        include_raw_judge=config.include_raw_judge,
     )
 
-    model_names = config.model_names
-    instruction_indices = list(range(n))
-    matchmaker_fn = get_matchmaker(config.matchmaker.strategy)
-    matches = matchmaker_fn(
-        models=model_names,
-        instruction_indices=instruction_indices,
-        n_matches=config.matchmaker.n_matches,
-    )
-    logger.info(
-        "Matchmaker '%s': %d matches for %d models",
-        config.matchmaker.strategy,
-        len(matches),
-        config.n_models,
-    )
 
-    judge_cfg = config.judge
-    judge_model_config = judge_cfg.to_model_config()
-    judge_model = make_model(judge_cfg.model, config=judge_model_config)
-    criteria_name_key = config.criteria if not Path(config.criteria).is_file() else criteria.name
-
-    arena_judge = ArenaJudge(
-        judge_model=judge_model,
-        criteria=criteria,
-        provide_explanation=judge_cfg.provide_explanation,
-        pairwise_prompt_style=judge_cfg.pairwise_prompt_style,
-    )
-
-    model_scores: dict[str, list[ModelScore]] = {}
-    if judge_cfg.mode == "samplewise":
-        precomputed = _resolve_scores(
-            arena_judge=arena_judge,
-            models=config.models,
-            completions=completions,
-            instructions=instructions,
-            judge_model=judge_cfg.model,
-            criteria_name=criteria_name_key,
-            dataset=cache_dataset,
-            n_instructions=config.n_instructions,
-            ignore_score_cache=config.ignore_score_cache,
-        )
-        model_scores, match_results = arena_judge.run_samplewise(
-            models=model_names,
-            completions=completions,
-            instructions=instructions,
-            matches=matches,
-            use_tqdm=True,
-            precomputed_scores=precomputed,
-        )
-    else:
-        match_results = arena_judge.run_pairwise(
-            completions=completions,
-            instructions=instructions,
-            matches=matches,
-            swap_to_debias=not judge_cfg.no_swap,
-            use_tqdm=True,
-        )
-
-    criteria_def: dict[str, Any] = {}
-    for c in criteria.criteria:
-        criteria_def[c.name] = {
-            "description": c.description,
-            "scale_min": c.scale_min,
-            "scale_max": c.scale_max,
-            "weight": c.weight,
-            **({"score_references": c.score_references} if c.score_references else {}),
-        }
-
-    for m in match_results:
-        idx = m.instruction_index
-        if 0 <= idx < n:
-            m.instruction_id = instruction_ids[idx]
-            m.instruction_metadata = instruction_metadata[idx]
-
-    prompt_key = "pairwise" if judge_cfg.mode == "pairwise" else "samplewise"
-    system_prompt_used = arena_judge.scorer.system_prompt.get(prompt_key, "")
-
+def _annotate_payload_to_arena_payload(
+    config: ArenaConfig,
+    annotate_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize canonical annotate output into the persisted arena artifact shape."""
+    metadata = dict(annotate_payload.get("metadata", {}))
     return {
         "metadata": {
-            "models": model_names,
+            "models": list(metadata.get("models", config.model_names)),
             "dataset": config.dataset,
-            "dataset_cache_key": cache_dataset,
-            "judge_model": judge_cfg.model,
-            "judge_mode": judge_cfg.mode,
-            "pairwise_prompt_style": judge_cfg.pairwise_prompt_style,
+            "dataset_cache_key": metadata.get(
+                "dataset_cache_key",
+                config.dataset_options.cache_key(),
+            ),
+            "judge_model": config.judge.model,
+            "judge_mode": config.judge.mode,
+            "pairwise_prompt_style": config.judge.pairwise_prompt_style,
             "matchmaker": config.matchmaker.strategy,
-            "criteria": criteria_name_key,
-            "n_instructions": n,
+            "criteria": config.criteria,
+            "n_instructions": metadata.get("n_instructions", config.n_instructions),
         },
-        "criteria_definition": criteria_def,
-        "criterion_names": list(criteria.criterion_names),
-        "instruction_metadata": instruction_metadata,
-        "model_scores": {
-            model: [
-                {
-                    "model": s.model,
-                    "instruction_index": s.instruction_index,
-                    "scores": s.scores,
-                    "sample_id": s.sample_id,
-                    "completion": s.completion,
-                    "raw_judge_output": s.raw_judge_output,
-                }
-                for s in scores
-            ]
-            for model, scores in model_scores.items()
-        },
-        "matches": [
-            {
-                "model_a": m.model_a,
-                "model_b": m.model_b,
-                "instruction_index": m.instruction_index,
-                "scores_a": m.scores_a,
-                "scores_b": m.scores_b,
-                "preference": m.preference,
-                **({"instruction_id": m.instruction_id} if m.instruction_id else {}),
-                **({"instruction_metadata": m.instruction_metadata} if m.instruction_metadata else {}),
-            }
-            for m in match_results
-        ],
-        "system_prompt": system_prompt_used,
+        "criteria_definition": annotate_payload.get("criteria_definition", {}),
+        "criterion_names": list(annotate_payload.get("criterion_names", [])),
+        "instruction_metadata": list(annotate_payload.get("instruction_metadata", [])),
+        "model_scores": dict(annotate_payload.get("model_scores", {})),
+        "matches": list(annotate_payload.get("matches", [])),
+        "system_prompt": annotate_payload.get("system_prompt", ""),
     }
+
+
+def _annotate_arena(config: ArenaConfig) -> dict[str, Any]:
+    """Run the canonical annotate engine for arena matchmaker evaluation."""
+    annotate_config = _arena_to_annotate_config(config)
+    annotate_payload = run_annotate(annotate_config, persist=False)
+    return _annotate_payload_to_arena_payload(config, annotate_payload)
 
 
 def _load_arena_annotation_runtime(output_dir: str | Path) -> dict[str, Any]:
@@ -236,18 +154,8 @@ def _analyze_arena_annotations(
     )
 
 
-def run_arena(config: ArenaConfig, stage: str = "all") -> ArenaResult | None:
-    """Execute the arena pipeline with stage control."""
-    if stage not in {"all", "annotate", "analyze"}:
-        raise ValueError(f"Unsupported arena stage: {stage}")
-
-    if stage == "analyze":
-        logger.info(
-            "Arena analyze stage: loading saved annotations only (no model inference)."
-        )
-        ann_runtime = _load_arena_annotation_runtime(config.output_dir)
-        return _analyze_arena_annotations(config, ann_runtime)
-
+def run_arena(config: ArenaConfig) -> None:
+    """Execute the arena pipeline: annotate and save the artifact."""
     ann_payload = _annotate_arena(config)
     ann_path = save_arena_annotations(
         config.output_dir,
@@ -256,214 +164,6 @@ def run_arena(config: ArenaConfig, stage: str = "all") -> ArenaResult | None:
     )
     config.save(Path(config.output_dir) / "arena_config.json")
     logger.info("Saved arena annotations: %s", ann_path)
-
-    if stage == "annotate":
-        logger.info("Arena annotate stage complete. Run --stage analyze to compute ratings.")
-        return None
-
-    ann_runtime = _load_arena_annotation_runtime(config.output_dir)
-    return _analyze_arena_annotations(config, ann_runtime)
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Completion resolution
-# ═════════════════════════════════════════════════════════════════════
-
-
-def _resolve_completions(
-    models: list[ModelEntry],
-    dataset: str,
-    n_instructions: int | None,
-    instructions: pd.Series,
-    generation_max_tokens: int,
-    truncate_input_chars: int = 8192,
-    ignore_cache: bool = False,
-) -> dict[str, pd.DataFrame]:
-    """Resolve completions for every model.
-
-    Resolution order per model:
-        1. ``model.completions`` is set → load from that parquet file.
-        2. Cache hit → use cached completions.
-        3. Cache miss → generate using the model backend, then cache.
-
-    For GPU models (VLLM, LlamaCpp), generation loads the model into GPU
-    memory, runs inference, then frees the GPU so the next model can load.
-    API models (OpenRouter, ChatOpenAI) simply call the remote API.
-
-    Args:
-        models: List of :class:`ModelEntry` from the config.
-        dataset: Dataset name for cache key.
-        n_instructions: Number of instructions (``None`` = all).
-        instructions: The instruction Series for generation.
-        generation_max_tokens: Default max tokens for generation.
-        ignore_cache: If ``True``, always regenerate.
-
-    Returns:
-        Dict mapping model name → DataFrame with ``completion`` column.
-    """
-    completions: dict[str, pd.DataFrame] = {}
-
-    for entry in models:
-        model = entry.name
-
-        # ── 1. Pre-specified completions file ────────────────────
-        if entry.completions:
-            pq = Path(entry.completions)
-            if not pq.exists():
-                raise FileNotFoundError(
-                    f"Completions file not found: {pq} (model: {model})"
-                )
-            df = pd.read_parquet(pq)
-            completions[model] = df
-            logger.info(
-                "Loaded %d completions for %s from file: %s",
-                len(df), entry.short_name, pq,
-            )
-            continue
-
-        # ── 2 & 3. Cache → generate on miss ─────────────────────
-        max_tok = entry.max_tokens or generation_max_tokens
-
-        def _generate(
-            _model: str = model,
-            _entry: ModelEntry = entry,
-            _max_tok: int = max_tok,
-        ) -> pd.DataFrame:
-            """Generate completions for a single model."""
-            # Apply the global generation_max_tokens default if the entry
-            # doesn't specify its own max_tokens.
-            effective_entry = _entry
-            if _entry.max_tokens is None:
-                from dataclasses import replace
-                effective_entry = replace(_entry, max_tokens=_max_tok)
-            model_config = effective_entry.to_model_config()
-            return generate_instructions(
-                instructions=instructions,
-                model=_model,
-                max_tokens=_max_tok,
-                config=model_config,
-                truncate_input_chars=truncate_input_chars,
-            )
-
-        was_cached = (not ignore_cache) and cache.exists(model, dataset, n_instructions)
-        df = cache.get_or_generate(
-            model=model,
-            dataset=dataset,
-            n=n_instructions,
-            generate_fn=_generate,
-            ignore_cache=ignore_cache,
-        )
-        completions[model] = df
-        logger.info(
-            "Completions for %s: %d rows (%s)",
-            entry.short_name, len(df),
-            "cache" if was_cached else "generated",
-        )
-
-    return completions
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Score resolution (per-model judge-score caching)
-# ═════════════════════════════════════════════════════════════════════
-
-
-def _resolve_scores(
-    arena_judge: ArenaJudge,
-    models: list[ModelEntry],
-    completions: dict[str, pd.DataFrame],
-    instructions: list[str],
-    judge_model: str,
-    criteria_name: str,
-    dataset: str,
-    n_instructions: int | None,
-    ignore_score_cache: bool,
-) -> dict[str, list]:
-    """Resolve per-model judge scores, using cache when possible.
-
-    For each model:
-        1. Check the score cache for existing scores.
-        2. On cache miss, call ``arena_judge.score_model()`` and cache the result.
-
-    This enables **incremental evaluation**: adding a new model to the
-    arena only requires scoring the new model — existing scores are
-    loaded from cache.
-
-    Args:
-        arena_judge: The :class:`ArenaJudge` instance (with criteria + judge model).
-        models: List of :class:`ModelEntry` from the config.
-        completions: Resolved completions (from ``_resolve_completions``).
-        instructions: List of instruction strings.
-        judge_model: Judge model specification (for cache key).
-        criteria_name: Criteria name (for cache key).
-        dataset: Dataset name (for cache key).
-        n_instructions: Number of instructions (for cache key).
-        ignore_score_cache: If ``True``, always re-score.
-
-    Returns:
-        Dict mapping model name → ``list[ModelScore]``.  All models
-        are guaranteed to have scores (either cached or freshly computed).
-    """
-    from openjury.arena.config import ModelScore  # local to avoid circular
-
-    precomputed: dict[str, list[ModelScore]] = {}
-
-    for entry in models:
-        model = entry.name
-
-        def _score(
-            _model: str = model,
-            _df: pd.DataFrame = completions[model],
-        ) -> list[ModelScore]:
-            return arena_judge.score_model(
-                model=_model,
-                completions_df=_df,
-                instructions=instructions,
-            )
-
-        was_cached = (
-            not ignore_score_cache
-            and score_cache.exists(judge_model, criteria_name, model, dataset, n_instructions)
-        )
-        scores = score_cache.get_or_score(
-            judge=judge_model,
-            criteria=criteria_name,
-            model=model,
-            dataset=dataset,
-            n=n_instructions,
-            score_fn=_score,
-            ignore_cache=ignore_score_cache,
-        )
-        precomputed[model] = scores
-        logger.info(
-            "Scores for %s: %d entries (%s)",
-            entry.short_name,
-            len(scores),
-            "cache" if was_cached else "scored",
-        )
-
-    return precomputed
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Criteria loading
-# ═════════════════════════════════════════════════════════════════════
-
-
-def _load_criteria(criteria_spec: str):
-    """Load criteria from a registry name or a JSON file path."""
-    if Path(criteria_spec).is_file():
-        import json
-        from openjury.criteria.schema import Criteria, Criterion
-
-        with open(criteria_spec, encoding="utf-8") as f:
-            rdata = json.load(f)
-        return Criteria(
-            name=rdata.get("name", "custom"),
-            description=rdata.get("description", ""),
-            criteria=[Criterion(**d) for d in rdata.get("criteria", rdata.get("dimensions", []))],
-        )
-    return get_criteria(criteria_spec)
 
 
 # ═════════════════════════════════════════════════════════════════════

@@ -47,10 +47,17 @@ def _ensure_config_map():
     """Lazily populate the provider→config mapping to avoid circular imports."""
     if _PROVIDER_CONFIG_MAP:
         return
-    from openjury.models.config import VLLMConfig, OpenAIConfig, LiteLLMConfig, LlamaCppConfig
+    from openjury.models.config import (
+        VLLMConfig,
+        SGLangConfig,
+        OpenAIConfig,
+        LiteLLMConfig,
+        LlamaCppConfig,
+    )
 
     _PROVIDER_CONFIG_MAP.update({
         "VLLM": VLLMConfig,
+        "SGLang": SGLangConfig,
         "ChatOpenAI": OpenAIConfig,
         "OpenRouter": OpenAIConfig,
         "LiteLLM": LiteLLMConfig,
@@ -122,13 +129,29 @@ def build_config_for_model(
 
     # Map generic names → provider-specific field names
     if issubclass(config_cls, ModelConfig):
-        from openjury.models.config import VLLMConfig, OpenAIConfig, LiteLLMConfig
+        from openjury.models.config import VLLMConfig, SGLangConfig, OpenAIConfig, LiteLLMConfig
 
         if issubclass(config_cls, VLLMConfig):
             if tensor_parallel_size is not None:
                 kwargs["tensor_parallel_size"] = tensor_parallel_size
             if gpu_memory_utilization is not None:
                 kwargs["gpu_memory_utilization"] = gpu_memory_utilization
+            if quantization is not None:
+                kwargs["quantization"] = quantization
+            if gpu_devices is not None:
+                kwargs["gpu_devices"] = gpu_devices
+            if chat_template is not None:
+                kwargs["chat_template"] = chat_template
+            elif chat_template_file is not None:
+                kwargs["chat_template"] = Path(chat_template_file).read_text(
+                    encoding="utf-8"
+                )
+
+        if issubclass(config_cls, SGLangConfig):
+            if tensor_parallel_size is not None:
+                kwargs["tensor_parallel_size"] = tensor_parallel_size
+            if gpu_memory_utilization is not None:
+                kwargs["mem_fraction_static"] = gpu_memory_utilization
             if quantization is not None:
                 kwargs["quantization"] = quantization
             if gpu_devices is not None:
@@ -202,7 +225,9 @@ def make_model(
 
     logger.info("Loading [model]%s[/model](model=%s)", provider, model_name)
 
-    if provider == "VLLM" and (chat_template is not None or chat_template_file is not None):
+    if provider in {"VLLM", "SGLang"} and (
+        chat_template is not None or chat_template_file is not None
+    ):
         base_kwargs: dict[str, Any] = {}
         if isinstance(config, dict):
             base_kwargs.update(config)

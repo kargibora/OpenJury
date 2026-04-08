@@ -16,6 +16,7 @@ from openjury.cli_args import (
     add_dataset_selection_args,
     add_judge_args,
 )
+from openjury.datasets import load_dataset
 from openjury.pipelines.agreement import run_agreement
 
 
@@ -105,6 +106,22 @@ def main(argv: list[str] | None = None) -> None:
         default="slurm_scripts",
         help="With --slurm: root directory for generated SLURM scripts.",
     )
+    parser.add_argument(
+        "--slurm_tag",
+        default=None,
+        help=(
+            "With --slurm: explicit run tag used in the generated SLURM run "
+            "directory name. Defaults to an auto-generated timestamp."
+        ),
+    )
+    parser.add_argument(
+        "--slurm_time",
+        default=None,
+        help=(
+            "With --slurm: wall-time for the judge SLURM job "
+            "(e.g. '04:00:00'). Overrides $TIME_LIMIT env var."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.submit and not args.slurm:
@@ -114,6 +131,30 @@ def main(argv: list[str] | None = None) -> None:
     if args.detach and not args.submit:
         parser.error("--detach requires --submit.")
     resolved = resolve_agreement_cli(parser, args, argv)
+
+    # ── Pre-flight dataset check ──────────────────────────────────────
+    # Verify the dataset is available (and trigger download if needed)
+    # *before* submitting a SLURM job that has no internet access.
+    logger.info(
+        "Pre-flight: verifying dataset %r is available locally…",
+        resolved.config.dataset,
+    )
+    try:
+        load_dataset(resolved.config.dataset, n=5)
+        logger.info("Pre-flight: dataset %r OK.", resolved.config.dataset)
+    except (FileNotFoundError, KeyError) as exc:
+        parser.error(
+            f"Dataset {resolved.config.dataset!r} is not available and could "
+            f"not be downloaded: {exc}\n"
+            f"Ensure the dataset is cached locally before submitting a SLURM job."
+        )
+    except Exception as exc:
+        parser.error(
+            f"Dataset {resolved.config.dataset!r} failed to load: "
+            f"{type(exc).__name__}: {exc}\n"
+            f"Fix the dataset loader before submitting."
+        )
+
     if resolved.slurm_forward is not None:
         if resolved.slurm_forward.warn_output_dir_semantics:
             logger.warning(
@@ -129,7 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    run_agreement(resolved.config, stage=resolved.stage)
+    run_agreement(resolved.config)
 
 
 if __name__ == "__main__":

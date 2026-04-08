@@ -112,3 +112,26 @@ def load_arena_annotations(output_dir: str | Path) -> dict[str, Any]:
         filename="arena_annotations.json",
         expected_task="arena",
     )
+
+
+def save_annotate_annotations(
+    output_dir: str | Path,
+    payload: dict[str, Any],
+    *,
+    config_snapshot: dict[str, Any] | None = None,
+) -> Path:
+    return save_annotation_artifact(
+        output_dir=output_dir,
+        filename="annotate_annotations.json",
+        task="annotate",
+        payload=payload,
+        config_snapshot=config_snapshot,
+    )
+
+
+def load_annotate_annotations(output_dir: str | Path) -> dict[str, Any]:
+    return load_annotation_artifact(
+        output_dir=output_dir,
+        filename="annotate_annotations.json",
+        expected_task="annotate",
+    )

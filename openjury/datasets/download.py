@@ -59,6 +59,21 @@ def _download_lmsys():
     logger.info("  ✅ %s — %d parquet file(s) cached at %s", repo_id, n_files, path)
 
 
+@_register("lmsys-140k", "LM Arena 140k human preferences")
+def _download_lmsys_140k():
+    from huggingface_hub import snapshot_download
+
+    repo_id = "lmarena-ai/arena-human-preference-140k"
+    logger.info("Downloading %s ...", repo_id)
+    path = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        allow_patterns="*.parquet",
+    )
+    n_files = len(list(Path(path).rglob("*.parquet")))
+    logger.info("  ✅ %s — %d parquet file(s) cached at %s", repo_id, n_files, path)
+
+
 @_register("comparia", "ComparIA French human preferences")
 def _download_comparia():
     from huggingface_hub import snapshot_download

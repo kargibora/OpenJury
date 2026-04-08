@@ -11,20 +11,22 @@ from typing import Literal
 class SlurmForwardRequest:
     """Execution options for forwarding a task config to ``openjury-slurm``."""
 
-    mode: Literal["arena", "agreement", "generate"]
+    mode: Literal["arena", "agreement", "generate", "annotate"]
     submit: bool = False
     detach: bool = False
     slurm_output_dir: str = "slurm_scripts"
+    tag: str | None = None
     remote: bool = False
     cluster: str | None = None
     remote_project_dir: str | None = None
     wait_timeout: int | None = None
     stage: Literal["all", "annotate", "analyze"] | None = None
+    time_judge: str | None = None
     warn_output_dir_semantics: bool = False
 
 
 def forward_task_config_to_slurm(
-    task_mode: Literal["arena", "agreement", "generate"],
+    task_mode: Literal["arena", "agreement", "generate", "annotate"],
     task_config,
     slurm_request: SlurmForwardRequest,
 ) -> None:
@@ -42,6 +44,8 @@ def forward_task_config_to_slurm(
         filename = "arena_config.json"
     elif task_mode == "agreement":
         filename = "agreement_config.json"
+    elif task_mode == "annotate":
+        filename = "annotate_config.json"
     else:
         filename = "generate_config.json"
 
@@ -61,6 +65,8 @@ def forward_task_config_to_slurm(
             "--output_dir",
             slurm_request.slurm_output_dir,
         ]
+        if slurm_request.tag:
+            slurm_argv += ["--tag", slurm_request.tag]
         if slurm_request.submit:
             slurm_argv.append("--submit")
         if slurm_request.detach:
@@ -75,5 +81,7 @@ def forward_task_config_to_slurm(
             slurm_argv += ["--wait_timeout", str(slurm_request.wait_timeout)]
         if task_mode in {"arena", "agreement"} and slurm_request.stage is not None:
             slurm_argv += ["--stage", slurm_request.stage]
+        if slurm_request.time_judge:
+            slurm_argv += ["--time_judge", slurm_request.time_judge]
 
         slurm_main(slurm_argv)

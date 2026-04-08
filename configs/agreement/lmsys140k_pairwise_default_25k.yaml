@@ -1,0 +1,17 @@
+dataset: lmsys-140k
+n_instructions: 25000
+seed: 42
+balance_by: models
+criteria: default
+output_dir: results/agreement_test
+
+generation:
+  ignore_score_cache: false
+
+judge:
+  model: VLLM/Qwen/Qwen3-32B
+  gpus: 4
+  mode: pairwise
+  enforce_eager: true
+
+include_completions: false

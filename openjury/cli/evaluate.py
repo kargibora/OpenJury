@@ -1,11 +1,13 @@
-"""Umbrella CLI for evaluation tasks (arena, agreement).
+"""Umbrella CLI for evaluation tasks (arena, agreement, annotate).
 
 Primary public interface:
 
 - ``openjury-evaluate arena ...``
 - ``openjury-evaluate agreement ...``
+- ``openjury-evaluate annotate ...``
 
-Task-specific commands (``openjury-arena``, ``openjury-agreement``) remain
+Task-specific commands (``openjury-arena``, ``openjury-agreement``,
+``openjury-annotate``) remain
 supported as backward-compatible aliases.
 """
 
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from openjury.cli import agreement as agreement_cli
+from openjury.cli import annotate as annotate_cli
 from openjury.cli import arena as arena_cli
 
 
@@ -37,6 +40,11 @@ _TASKS: dict[str, _EvalTask] = {
         help="Human-vs-judge agreement evaluation on preference datasets",
         handler=agreement_cli.main,
     ),
+    "annotate": _EvalTask(
+        name="annotate",
+        help="Generate sparse judge annotations for a challenger model",
+        handler=annotate_cli.main,
+    ),
 }
 
 
@@ -45,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
         prog="openjury-evaluate",
         description=(
             "Run OpenJury evaluation tasks. Use a subcommand for a specific "
-            "evaluation pipeline (e.g. arena, agreement)."
+            "evaluation pipeline (e.g. arena, agreement, annotate)."
         ),
     )
     subparsers = parser.add_subparsers(dest="task", metavar="TASK")
@@ -63,4 +71,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

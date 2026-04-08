@@ -77,6 +77,14 @@ Examples:
         default="slurm_scripts",
         help="With --slurm: root directory for generated SLURM scripts (default: slurm_scripts).",
     )
+    parser.add_argument(
+        "--slurm_tag",
+        default=None,
+        help=(
+            "With --slurm: explicit run tag used in the generated SLURM run "
+            "directory name. Defaults to an auto-generated timestamp."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -98,7 +106,7 @@ Examples:
         forward_task_config_to_slurm("arena", resolved.config, resolved.slurm_forward)
         return
 
-    run_arena(resolved.config, stage=resolved.stage)
+    run_arena(resolved.config)
 
 
 if __name__ == "__main__":

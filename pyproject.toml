@@ -35,7 +35,11 @@ include = ["openjury*"]
 exclude = ["slurmpilot_scripts*"]
 
 [project.optional-dependencies]
-vllm = ["vllm==0.10.2", "transformers>=4.55.2,<5"]
+vllm = [
+    "vllm>=0.17.1,<0.18; sys_platform == 'linux' and python_version < '3.14'",
+    "transformers>=4.55.2,<5",
+]
+sglang = ["sglang", "transformers>=4.55.2,<5"]
 llamacpp = ["llama-cpp-python>=0.3.0"]
 yaml = ["PyYAML>=6.0"]
 dev = ["black>=25.1.0", "pytest>=8.4.2"]
@@ -43,9 +47,11 @@ dev = ["black>=25.1.0", "pytest>=8.4.2"]
 [project.scripts]
 openjury-arena = "openjury.cli.arena:main"
 openjury-generate = "openjury.cli.generate:main"
+openjury-annotate = "openjury.cli.annotate:main"
 openjury-agreement = "openjury.cli.agreement:main"
 openjury-evaluate = "openjury.cli.evaluate:main"
 openjury-slurm = "openjury.slurm.generate_slurm:main"
+openjury-migrate-generate-config = "openjury.cli.migrate_generate_config:main"
 openjury-completion-cache = "openjury.cache.completions:_cli"
 openjury-score-cache = "openjury.cache.scores:_cli"
 
@@ -57,3 +63,14 @@ dev = [
     "ipykernel>=7.2.0",
     "pytest>=9.0.2",
 ]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu126"
+explicit = true
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and python_version < '3.14'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }

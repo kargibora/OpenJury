@@ -10,10 +10,12 @@ from openjury.models.backends.openai import OpenAIBackend  # noqa: F401
 from openjury.models.backends.openai import OpenRouterBackend  # noqa: F401
 from openjury.models.backends.litellm import LiteLLMBackend  # noqa: F401
 from openjury.models.backends.llamacpp import LlamaCppBackend  # noqa: F401
+from openjury.models.backends.sglang import SGLangBackend  # noqa: F401
 
 __all__ = [
     "DummyBackend",
     "VLLMBackend",
+    "SGLangBackend",
     "OpenAIBackend",
     "OpenRouterBackend",
     "LiteLLMBackend",

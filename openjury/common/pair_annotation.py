@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from openjury._logging import logger
 from openjury.arena.config import ModelScore
 from openjury.cache.scores import score_cache
 
@@ -44,6 +45,21 @@ class PairJudgement:
     preference: float
     raw_judge_output: str = ""
     raw_judge_output_swapped: str | None = None
+    # ── Per-swap position scores (before averaging) ────────────
+    scores_a_original: dict[str, float] | None = None
+    scores_b_original: dict[str, float] | None = None
+    preference_original: float | None = None
+    scores_a_swapped: dict[str, float] | None = None
+    scores_b_swapped: dict[str, float] | None = None
+    preference_swapped: float | None = None
+    # ── Multi-trial (Average-of-K) fields ──────────────────────
+    n_trials: int = 1
+    std_preference: float = 0.0
+    self_agreement: float = 1.0
+    score_std_a: dict[str, float] | None = None
+    score_std_b: dict[str, float] | None = None
+    trial_raw_outputs: list[str] | None = None
+    trial_raw_outputs_swapped: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -167,21 +183,29 @@ def score_pairs_pairwise(
     use_tqdm: bool = False,
     cache_config: PairwiseCacheConfig | None = None,
     ignore_cache: bool = False,
+    cache_fallback_model_keys: list[str] | None = None,
+    prefer_raw_ab_from_cache: bool = False,
+    n_trials: int = 1,
 ) -> list[PairJudgement]:
     """Judge normalized pairs in pairwise mode, with optional score cache."""
     if not pairs:
         return []
 
+    # Multi-trial runs always bypass the cache: the cache stores single-trial
+    # aggregated scores and cannot represent per-trial raw outputs.
+    if n_trials > 1:
+        ignore_cache = True
+
     sample_ids = [p.sample_id for p in pairs]
 
-    def _load_cached() -> list[tuple[ModelScore, ModelScore]] | None:
+    def _load_for_model_key(model_key: str) -> list[tuple[ModelScore, ModelScore]] | None:
         if ignore_cache or cache_config is None:
             return None
 
         cached = score_cache.get(
             judge=cache_config.judge,
             criteria=cache_config.criteria,
-            model=cache_config.model_key,
+            model=model_key,
             dataset=cache_config.dataset_exact,
             n=cache_config.n_instructions,
         )
@@ -200,7 +224,7 @@ def score_pairs_pairwise(
             cached_all = score_cache.get(
                 judge=cache_config.judge,
                 criteria=cache_config.criteria,
-                model=cache_config.model_key,
+                model=model_key,
                 dataset=cache_config.dataset_base,
                 n=None,
             )
@@ -214,10 +238,67 @@ def score_pairs_pairwise(
 
         return None
 
-    cached_pairs = _load_cached()
+    def _load_cached() -> tuple[list[tuple[ModelScore, ModelScore]] | None, str | None]:
+        if ignore_cache or cache_config is None:
+            return None, None
+
+        primary = _load_for_model_key(cache_config.model_key)
+        if primary is not None:
+            return primary, cache_config.model_key
+
+        for fallback_key in cache_fallback_model_keys or []:
+            restored = _load_for_model_key(fallback_key)
+            if restored is not None:
+                logger.info(
+                    "Score cache fallback hit: using model key '%s' for requested '%s'",
+                    fallback_key,
+                    cache_config.model_key,
+                )
+                return restored, fallback_key
+
+        return None, None
+
+    cached_pairs, cache_hit_model_key = _load_cached()
     if cached_pairs is not None:
         out: list[PairJudgement] = []
+        used_fallback_key = (
+            cache_config is not None
+            and cache_hit_model_key is not None
+            and cache_hit_model_key != cache_config.model_key
+        )
+        reconstruct_from_raw_ab = (
+            prefer_raw_ab_from_cache
+            and used_fallback_key
+            and callable(getattr(scorer, "_parse_pairwise", None))
+        )
+        reconstructed_all = True
         for pair, (ms_a, ms_b) in zip(pairs, cached_pairs):
+            if reconstruct_from_raw_ab and ms_a.raw_judge_output:
+                try:
+                    parsed = scorer._parse_pairwise(ms_a.raw_judge_output)
+                except Exception:
+                    parsed = None
+                if (
+                    isinstance(parsed, dict)
+                    and isinstance(parsed.get("scores_A"), dict)
+                    and isinstance(parsed.get("scores_B"), dict)
+                ):
+                    out.append(
+                        PairJudgement(
+                            sample_id=pair.sample_id,
+                            instruction_index=pair.instruction_index,
+                            model_a=pair.model_a,
+                            model_b=pair.model_b,
+                            scores_a=dict(parsed["scores_A"]),
+                            scores_b=dict(parsed["scores_B"]),
+                            preference=float(parsed.get("preference", 0.5)),
+                            raw_judge_output=ms_a.raw_judge_output,
+                            raw_judge_output_swapped=None,
+                        )
+                    )
+                    continue
+                reconstructed_all = False
+
             scores_a = dict(ms_a.scores)
             preference = float(scores_a.pop("__preference__", 0.5))
             out.append(
@@ -233,6 +314,49 @@ def score_pairs_pairwise(
                     raw_judge_output_swapped=ms_b.raw_judge_output or None,
                 )
             )
+
+        if reconstruct_from_raw_ab and not reconstructed_all:
+            logger.warning(
+                "Failed to reconstruct some no-swap entries from fallback cache raw outputs; "
+                "falling back to stored merged scores for those entries."
+            )
+
+        if (
+            cache_config is not None
+            and used_fallback_key
+            and reconstruct_from_raw_ab
+            and reconstructed_all
+        ):
+            cache_entries: list[ModelScore] = []
+            for pair, ann in zip(pairs, out):
+                cache_entries.append(
+                    ModelScore(
+                        model=pair.model_a,
+                        instruction_index=pair.instruction_index,
+                        sample_id=pair.sample_id,
+                        scores={**ann.scores_a, "__preference__": ann.preference},
+                        completion=pair.completion_a,
+                        raw_judge_output=ann.raw_judge_output,
+                    )
+                )
+                cache_entries.append(
+                    ModelScore(
+                        model=pair.model_b,
+                        instruction_index=pair.instruction_index,
+                        sample_id=pair.sample_id,
+                        scores=ann.scores_b,
+                        completion=pair.completion_b,
+                        raw_judge_output=ann.raw_judge_output_swapped or "",
+                    )
+                )
+            score_cache.put(
+                cache_entries,
+                judge=cache_config.judge,
+                criteria=cache_config.criteria,
+                model=cache_config.model_key,
+                dataset=cache_config.dataset_exact,
+                n=cache_config.n_instructions,
+            )
         return out
 
     results = scorer.score_pairwise(
@@ -241,23 +365,67 @@ def score_pairs_pairwise(
         completions_B=[p.completion_b for p in pairs],
         swap_to_debias=swap_to_debias,
         use_tqdm=use_tqdm,
+        n_trials=n_trials,
     )
 
     out: list[PairJudgement] = []
     for pair, res in zip(pairs, results):
-        out.append(
-            PairJudgement(
-                sample_id=pair.sample_id,
-                instruction_index=pair.instruction_index,
-                model_a=pair.model_a,
-                model_b=pair.model_b,
-                scores_a=res.scores_A,
-                scores_b=res.scores_B,
-                preference=res.preference,
-                raw_judge_output=res.raw_judge_output,
-                raw_judge_output_swapped=res.raw_judge_output_swapped,
+        # Handle both single-trial (PairwiseCriteriaResult) and
+        # multi-trial (MultiTrialPairwiseResult) return types.
+        from openjury.criteria.schema import MultiTrialPairwiseResult as _MT
+        if isinstance(res, _MT):
+            _first = res.trials[0] if res.trials else None
+            out.append(
+                PairJudgement(
+                    sample_id=pair.sample_id,
+                    instruction_index=pair.instruction_index,
+                    model_a=pair.model_a,
+                    model_b=pair.model_b,
+                    scores_a=res.mean_scores_A,
+                    scores_b=res.mean_scores_B,
+                    preference=res.mean_preference,
+                    raw_judge_output=_first.raw_judge_output if _first else "",
+                    raw_judge_output_swapped=(
+                        _first.raw_judge_output_swapped if _first else None
+                    ),
+                    scores_a_original=_first.scores_A_original if _first else None,
+                    scores_b_original=_first.scores_B_original if _first else None,
+                    preference_original=_first.preference_original if _first else None,
+                    scores_a_swapped=_first.scores_A_swapped if _first else None,
+                    scores_b_swapped=_first.scores_B_swapped if _first else None,
+                    preference_swapped=_first.preference_swapped if _first else None,
+                    n_trials=res.n_trials,
+                    std_preference=res.std_preference,
+                    self_agreement=res.self_agreement,
+                    score_std_a=res.score_std_A,
+                    score_std_b=res.score_std_B,
+                    trial_raw_outputs=[t.raw_judge_output for t in res.trials],
+                    trial_raw_outputs_swapped=[
+                        t.raw_judge_output_swapped or ""
+                        for t in res.trials
+                    ],
+                )
             )
-        )
+        else:
+            out.append(
+                PairJudgement(
+                    sample_id=pair.sample_id,
+                    instruction_index=pair.instruction_index,
+                    model_a=pair.model_a,
+                    model_b=pair.model_b,
+                    scores_a=res.scores_A,
+                    scores_b=res.scores_B,
+                    preference=res.preference,
+                    raw_judge_output=res.raw_judge_output,
+                    raw_judge_output_swapped=res.raw_judge_output_swapped,
+                    scores_a_original=res.scores_A_original,
+                    scores_b_original=res.scores_B_original,
+                    preference_original=res.preference_original,
+                    scores_a_swapped=res.scores_A_swapped,
+                    scores_b_swapped=res.scores_B_swapped,
+                    preference_swapped=res.preference_swapped,
+                )
+            )
 
     if cache_config is not None:
         cache_entries: list[ModelScore] = []
@@ -304,10 +472,15 @@ def score_pairs_samplewise(
     ignore_cache: bool = False,
     side_a_label: str = "side_A",
     side_b_label: str = "side_B",
+    n_trials: int = 1,
 ) -> list[PairJudgement]:
     """Judge normalized pairs samplewise (score A and B independently)."""
     if not pairs:
         return []
+
+    # Multi-trial runs always bypass the cache (see pairwise comment).
+    if n_trials > 1:
+        ignore_cache = True
 
     sample_ids = [p.sample_id for p in pairs]
 
@@ -317,18 +490,28 @@ def score_pairs_samplewise(
             completions=completions,
             model_name=side_label,
             use_tqdm=use_tqdm,
+            n_trials=n_trials,
         )
-        return [
-            ModelScore(
+        # Handle both single-trial (CriteriaScore) and multi-trial
+        # (MultiTrialSamplewiseResult) return types.
+        from openjury.criteria.schema import MultiTrialSamplewiseResult as _MTS
+        out_scores: list[ModelScore] = []
+        for i, rs in enumerate(rs_list):
+            if isinstance(rs, _MTS):
+                scores = rs.mean_scores
+                raw_out = rs.trials[0].raw_judge_output if rs.trials else ""
+            else:
+                scores = rs.scores
+                raw_out = rs.raw_judge_output
+            out_scores.append(ModelScore(
                 model=side_label,
                 instruction_index=pairs[i].instruction_index,
                 sample_id=pairs[i].sample_id,
-                scores=rs.scores,
+                scores=scores,
                 completion=completions[i],
-                raw_judge_output=rs.raw_judge_output,
-            )
-            for i, rs in enumerate(rs_list)
-        ]
+                raw_judge_output=raw_out,
+            ))
+        return out_scores
 
     def _load_cached_side(cache_model_key: str) -> list[ModelScore] | None:
         if ignore_cache or cache_config is None:
