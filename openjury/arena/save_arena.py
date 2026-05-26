@@ -47,12 +47,51 @@ Schema (v2.1)::
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from openjury._logging import logger
 from openjury.arena.config import ArenaResult
+
+
+_DROP = object()
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    """Recursively drop NaN values so persisted arena JSON is strict JSON."""
+    try:
+        if math.isnan(value):
+            return _DROP
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned[key] = sanitized
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_list: list[Any] = []
+        for item in value:
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned_list.append(sanitized)
+        return cleaned_list
+
+    if isinstance(value, tuple):
+        cleaned_tuple: list[Any] = []
+        for item in value:
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned_tuple.append(sanitized)
+        return cleaned_tuple
+
+    return value
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -167,15 +206,15 @@ def save_arena(
         "dimension_weights": result.dimension_weights,
         "dimension_weight_accuracy": result.dimension_weight_accuracy,
     }
+    data = _sanitize_json_value(data)
 
     # ── Write ────────────────────────────────────────────────────
     path = output_dir / "arena.json"
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(data, f, indent=2, default=str, allow_nan=False)
 
     logger.info(
         "Saved arena.json: %d models, %d matches → %s",
         result.n_models, result.n_matches, path,
     )
     return path
-

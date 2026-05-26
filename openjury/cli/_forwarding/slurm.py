@@ -22,6 +22,9 @@ class SlurmForwardRequest:
     wait_timeout: int | None = None
     stage: Literal["all", "annotate", "analyze"] | None = None
     time_judge: str | None = None
+    container_runtime: str | None = None
+    container_image: str | None = None
+    container_home: str | None = None
     warn_output_dir_semantics: bool = False
 
 
@@ -83,5 +86,11 @@ def forward_task_config_to_slurm(
             slurm_argv += ["--stage", slurm_request.stage]
         if slurm_request.time_judge:
             slurm_argv += ["--time_judge", slurm_request.time_judge]
+        if slurm_request.container_runtime is not None:
+            slurm_argv += ["--container_runtime", slurm_request.container_runtime]
+        if slurm_request.container_image is not None:
+            slurm_argv += ["--container_image", slurm_request.container_image]
+        if slurm_request.container_home is not None:
+            slurm_argv += ["--container_home", slurm_request.container_home]
 
         slurm_main(slurm_argv)

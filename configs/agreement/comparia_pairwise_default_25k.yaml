@@ -9,7 +9,7 @@ output_dir: results/agreement_test
 generation:
   ignore_score_cache: true
 
-criteria: configs/criteria/default_5pt.yaml
+criteria: default
 judge:
   model: VLLM/Qwen/Qwen3.5-27B
   gpus: 4

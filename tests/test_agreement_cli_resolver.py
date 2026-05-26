@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 from openjury.arena.config import AgreementConfig, JudgeConfig
+from openjury.cli import agreement as agreement_cli
 from openjury.cli._resolvers.agreement import resolve_agreement_cli
 from openjury.cli_args import add_dataset_args, add_dataset_selection_args, add_judge_args
 
@@ -70,3 +72,74 @@ def test_agreement_resolver_auto_loads_stage_analyze_config(tmp_path):
     assert resolved.stage == "analyze"
     assert resolved.config.dataset == "comparia"
     assert resolved.config.language == "fr"
+
+
+def test_agreement_main_skips_dataset_preflight_for_local_runs(monkeypatch):
+    calls: dict[str, object] = {"preflight": 0, "run": None}
+    config = AgreementConfig(dataset="lmsys", judge=JudgeConfig(model="Dummy/J"))
+
+    monkeypatch.setattr(
+        agreement_cli,
+        "resolve_agreement_cli",
+        lambda parser, args, argv: SimpleNamespace(config=config, slurm_forward=None),
+    )
+
+    def _unexpected_preflight(*args, **kwargs):
+        calls["preflight"] = int(calls["preflight"]) + 1
+        raise AssertionError("local agreement runs should not preflight datasets")
+
+    monkeypatch.setattr(agreement_cli, "load_dataset", _unexpected_preflight)
+    monkeypatch.setattr(
+        agreement_cli,
+        "run_agreement",
+        lambda cfg: calls.__setitem__("run", cfg),
+    )
+
+    agreement_cli.main([])
+
+    assert calls["preflight"] == 0
+    assert calls["run"] == config
+
+
+def test_agreement_main_preflights_before_slurm_forward(monkeypatch):
+    preflight_calls: list[tuple[str, int]] = []
+    forwarded: dict[str, object] = {}
+    config = AgreementConfig(dataset="lmsys", judge=JudgeConfig(model="Dummy/J"))
+    slurm_forward = SimpleNamespace(warn_output_dir_semantics=False)
+
+    monkeypatch.setattr(
+        agreement_cli,
+        "resolve_agreement_cli",
+        lambda parser, args, argv: SimpleNamespace(
+            config=config,
+            slurm_forward=slurm_forward,
+        ),
+    )
+    monkeypatch.setattr(
+        agreement_cli,
+        "load_dataset",
+        lambda dataset, n=5: preflight_calls.append((dataset, n)),
+    )
+    monkeypatch.setattr(
+        agreement_cli,
+        "forward_task_config_to_slurm",
+        lambda task, cfg, forward: forwarded.update(
+            {"task": task, "config": cfg, "forward": forward}
+        ),
+    )
+    monkeypatch.setattr(
+        agreement_cli,
+        "run_agreement",
+        lambda cfg: (_ for _ in ()).throw(
+            AssertionError("SLURM-forwarded runs should not execute locally")
+        ),
+    )
+
+    agreement_cli.main(["--slurm"])
+
+    assert preflight_calls == [("lmsys", 5)]
+    assert forwarded == {
+        "task": "agreement",
+        "config": config,
+        "forward": slurm_forward,
+    }

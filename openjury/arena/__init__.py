@@ -26,6 +26,13 @@ from openjury.arena.config import (
     ModelScore,
 )
 
+from openjury.arena.ratings import (
+    compute_soft_labels,
+    evaluate_elo,
+    fit_softlabel_bt,
+    score_gap_array,
+)
+
 __all__ = [
     "AgreementConfig",
     "ArenaConfig",
@@ -36,4 +43,8 @@ __all__ = [
     "MatchResult",
     "ModelEntry",
     "ModelScore",
+    "compute_soft_labels",
+    "evaluate_elo",
+    "fit_softlabel_bt",
+    "score_gap_array",
 ]

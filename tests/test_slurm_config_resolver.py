@@ -268,6 +268,195 @@ def test_build_run_plan_from_env_and_args_uses_structured_model_entries(
     assert plan.execution.partition == "part"
 
 
+def test_build_run_plan_from_env_and_args_resolves_container_defaults(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("USER_WORK_DIR", str(tmp_path / "user_work"))
+    monkeypatch.setenv("ACCOUNT", "acct")
+    monkeypatch.setenv("PARTITION", "part")
+    monkeypatch.setenv("TIME_LIMIT", "00:30:00")
+    monkeypatch.setenv("OPENJURY_CONTAINER_RUNTIME", "apptainer")
+    monkeypatch.setenv("OPENJURY_CONTAINER_IMAGE", str(tmp_path / "runtime.sif"))
+    monkeypatch.setenv("OPENJURY_CONTAINER_HOME", str(tmp_path / "container-home"))
+
+    args = argparse.Namespace(
+        dataset="lmsys",
+        judge_model="VLLM/Qwen/Qwen3-8B",
+        judge_gpus=1,
+        judge_quantization=None,
+        judge_mode="samplewise",
+        pairwise_prompt_style="criteria",
+        judge_max_tokens=2048,
+        no_swap=False,
+        provide_explanation=False,
+        enable_thinking=False,
+        chat_template=None,
+        chat_template_file=None,
+        max_model_len=None,
+        judge_max_model_len=None,
+        enforce_eager=False,
+        judge_enforce_eager=False,
+        gen_kwargs=None,
+        criteria="default",
+        n_instructions=10,
+        generation_max_tokens=4096,
+        truncate_input_chars=8192,
+        ignore_cache=False,
+        ignore_score_cache=False,
+        language=None,
+        seed=42,
+        balance_by=None,
+        truncate_instruction=500,
+        stage="all",
+        mode="agreement",
+        models=[],
+        model_gpus=None,
+        model_quantizations=None,
+        model_entries=[],
+        partition=None,
+        account=None,
+        time_generate=None,
+        time_judge=None,
+        qos="normal",
+        project_dir=None,
+        tag="TAG",
+        container_runtime=None,
+        container_image=None,
+        container_home=None,
+    )
+
+    plan = build_run_plan_from_env_and_args(args)
+
+    assert plan.execution.container_runtime == "apptainer"
+    assert plan.execution.container_image == str(tmp_path / "runtime.sif")
+    assert plan.execution.container_home == str(tmp_path / "container-home")
+
+
+def test_build_run_plan_from_env_and_args_allows_container_cli_overrides(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("USER_WORK_DIR", str(tmp_path / "user_work"))
+    monkeypatch.setenv("ACCOUNT", "acct")
+    monkeypatch.setenv("PARTITION", "part")
+    monkeypatch.setenv("TIME_LIMIT", "00:30:00")
+    monkeypatch.setenv("OPENJURY_CONTAINER_RUNTIME", "none")
+
+    args = argparse.Namespace(
+        dataset="lmsys",
+        judge_model="VLLM/Qwen/Qwen3-8B",
+        judge_gpus=1,
+        judge_quantization=None,
+        judge_mode="samplewise",
+        pairwise_prompt_style="criteria",
+        judge_max_tokens=2048,
+        no_swap=False,
+        provide_explanation=False,
+        enable_thinking=False,
+        chat_template=None,
+        chat_template_file=None,
+        max_model_len=None,
+        judge_max_model_len=None,
+        enforce_eager=False,
+        judge_enforce_eager=False,
+        gen_kwargs=None,
+        criteria="default",
+        n_instructions=10,
+        generation_max_tokens=4096,
+        truncate_input_chars=8192,
+        ignore_cache=False,
+        ignore_score_cache=False,
+        language=None,
+        seed=42,
+        balance_by=None,
+        truncate_instruction=500,
+        stage="all",
+        mode="agreement",
+        models=[],
+        model_gpus=None,
+        model_quantizations=None,
+        model_entries=[],
+        partition=None,
+        account=None,
+        time_generate=None,
+        time_judge=None,
+        qos="normal",
+        project_dir=None,
+        tag="TAG",
+        container_runtime="apptainer",
+        container_image=str(tmp_path / "cli-runtime.sif"),
+        container_home=str(tmp_path / "cli-home"),
+    )
+
+    plan = build_run_plan_from_env_and_args(args)
+
+    assert plan.execution.container_runtime == "apptainer"
+    assert plan.execution.container_image == str(tmp_path / "cli-runtime.sif")
+    assert plan.execution.container_home == str(tmp_path / "cli-home")
+
+
+def test_build_run_plan_from_env_and_args_defaults_container_home_from_hf_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("USER_WORK_DIR", str(tmp_path / "user_work"))
+    monkeypatch.setenv("ACCOUNT", "acct")
+    monkeypatch.setenv("PARTITION", "part")
+    monkeypatch.setenv("TIME_LIMIT", "00:30:00")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-cache"))
+    monkeypatch.setenv("OPENJURY_CONTAINER_RUNTIME", "apptainer")
+    monkeypatch.setenv("OPENJURY_CONTAINER_IMAGE", str(tmp_path / "runtime.sif"))
+    monkeypatch.delenv("OPENJURY_CONTAINER_HOME", raising=False)
+
+    args = argparse.Namespace(
+        dataset="lmsys",
+        judge_model="VLLM/Qwen/Qwen3-8B",
+        judge_gpus=1,
+        judge_quantization=None,
+        judge_mode="samplewise",
+        pairwise_prompt_style="criteria",
+        judge_max_tokens=2048,
+        no_swap=False,
+        provide_explanation=False,
+        enable_thinking=False,
+        chat_template=None,
+        chat_template_file=None,
+        max_model_len=None,
+        judge_max_model_len=None,
+        enforce_eager=False,
+        judge_enforce_eager=False,
+        gen_kwargs=None,
+        criteria="default",
+        n_instructions=10,
+        generation_max_tokens=4096,
+        truncate_input_chars=8192,
+        ignore_cache=False,
+        ignore_score_cache=False,
+        language=None,
+        seed=42,
+        balance_by=None,
+        truncate_instruction=500,
+        stage="all",
+        mode="agreement",
+        models=[],
+        model_gpus=None,
+        model_quantizations=None,
+        model_entries=[],
+        partition=None,
+        account=None,
+        time_generate=None,
+        time_judge=None,
+        qos="normal",
+        project_dir=None,
+        tag="TAG",
+        container_runtime=None,
+        container_image=None,
+        container_home=None,
+    )
+
+    plan = build_run_plan_from_env_and_args(args)
+
+    assert plan.execution.container_home == str(tmp_path / "hf-cache" / "openjury_container_home")
+
+
 def test_validate_mode_args_rejects_stage_for_generate_and_judge():
     parser = argparse.ArgumentParser()
 

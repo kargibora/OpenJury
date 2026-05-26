@@ -698,6 +698,8 @@ class MatchResult:
             "scores_a": self.scores_a,
             "scores_b": self.scores_b,
             "preference": self.preference,
+            "len_a": len(self.completion_a or ""),
+            "len_b": len(self.completion_b or ""),
         }
         if self.instruction:
             d["instruction"] = self.instruction

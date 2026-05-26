@@ -63,6 +63,9 @@ class SlurmExecutionConfig:
     project_dir: str = ""
     work_dir: str = ""
     logs_dir: str = ""
+    container_runtime: str = "none"
+    container_image: str = ""
+    container_home: str = ""
 
 
 @dataclass

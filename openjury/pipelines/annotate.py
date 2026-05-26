@@ -8,8 +8,47 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 from typing import Any
+
+
+_DROP = object()
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    """Recursively drop NaN values so persisted JSON stays strict and clean."""
+    try:
+        if math.isnan(value):  # handles float + numpy float scalars
+            return _DROP
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned[key] = sanitized
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_list: list[Any] = []
+        for item in value:
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned_list.append(sanitized)
+        return cleaned_list
+
+    if isinstance(value, tuple):
+        cleaned_tuple: list[Any] = []
+        for item in value:
+            sanitized = _sanitize_json_value(item)
+            if sanitized is not _DROP:
+                cleaned_tuple.append(sanitized)
+        return cleaned_tuple
+
+    return value
 
 
 def _artifact_path(output_dir: str | Path, filename: str) -> Path:
@@ -35,8 +74,9 @@ def save_annotation_artifact(
         "config_snapshot": config_snapshot or {},
         **payload,
     }
+    data = _sanitize_json_value(data)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(data, f, indent=2, default=str, allow_nan=False)
     return path
 
 

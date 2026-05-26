@@ -105,6 +105,29 @@ export OPENJURY_VENV=/path/to/venv
 
 Generated SLURM scripts use `OPENJURY_VENV` if present and otherwise fall back to `.venv`.
 
+For containerized `VLLM/...` SLURM jobs, set:
+
+```bash
+export OPENJURY_CONTAINER_RUNTIME=apptainer
+export OPENJURY_CONTAINER_IMAGE=/path/to/vllm-openai.sif
+export OPENJURY_CONTAINER_HOME=/path/to/openjury_container_home
+```
+
+If `OPENJURY_CONTAINER_HOME` is not set, OpenJury falls back to
+`$HF_HOME/openjury_container_home`.
+
+Then prepare the persistent container home once on the login node:
+
+```bash
+openjury-container-prepare
+```
+
+For a fuller cluster-oriented walkthrough, see [docs/apptainer.md](docs/apptainer.md).
+
+Pre-cache models and datasets into `HF_HOME` on the login node, then keep using the normal
+`--slurm` workflow. If needed, you can override the `.env` defaults per run with
+`--slurm_container_runtime`, `--slurm_container_image`, and `--slurm_container_home`.
+
 ## Execution Modes
 
 OpenJury supports:
@@ -536,6 +559,8 @@ Notes:
 - `openjury-generate --slurm` generates/submits SLURM scripts and uses OpenJury-managed SLURM work/cache paths (it does not write directly to the local `--output` parquet path).
 - Cluster settings (`ACCOUNT`, `PARTITION`, `USER_WORK_DIR`, `TIME_LIMIT`) are read from environment variables or `.env`.
 - Compute-node scripts source `.env` and then enable HF offline mode by default, so datasets and model weights must already be cached.
+- `OPENJURY_VENV` is used for host-based compute jobs. Containerized `VLLM/...` jobs use `OPENJURY_CONTAINER_RUNTIME`, `OPENJURY_CONTAINER_IMAGE`, and `OPENJURY_CONTAINER_HOME` instead.
+- Recommended Leonardo workflow for containerized vLLM: set the container vars in `.env`, run `openjury-container-prepare` on the login node, pre-cache datasets and model weights into `HF_HOME`, then use the normal `--slurm` commands.
 
 ### Per-model entries (optional overrides)
 

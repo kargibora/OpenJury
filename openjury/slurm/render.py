@@ -8,11 +8,17 @@ from typing import Any
 
 from openjury.annotate_config import AnnotateConfig
 from openjury.arena.config import AgreementConfig, ArenaConfig
+from openjury.container_support import is_vllm_model
 from openjury.models.utils import api_key_env_for_model
 from openjury.slurm.plans import GenerateTaskConfig, SlurmExecutionConfig, SlurmRunPlan
 
 
-def _build_env_preamble(execution: SlurmExecutionConfig, *, is_compute: bool) -> str:
+def _build_env_preamble(
+    execution: SlurmExecutionConfig,
+    *,
+    is_compute: bool,
+    use_container: bool = False,
+) -> str:
     """Build an env-setup block for generated scripts."""
     lines: list[str] = []
     env_file = os.path.join(execution.project_dir, ".env")
@@ -22,7 +28,7 @@ def _build_env_preamble(execution: SlurmExecutionConfig, *, is_compute: bool) ->
     lines.append("fi")
     lines.append("")
 
-    if is_compute:
+    if is_compute and not use_container:
         lines.append("# Activate venv (OPENJURY_VENV from .env, fallback to .venv)")
         lines.append('OPENJURY_VENV="${OPENJURY_VENV:-$PWD/.venv}"')
         lines.append('if [ -f "$OPENJURY_VENV/bin/activate" ]; then')
@@ -32,6 +38,15 @@ def _build_env_preamble(execution: SlurmExecutionConfig, *, is_compute: bool) ->
         lines.append('fi')
         lines.append("")
         lines.append("# Compute node — enable HF offline mode")
+        lines.append('if [ -z "${HF_HUB_OFFLINE:-}" ]; then')
+        lines.append("    export HF_HUB_OFFLINE=1")
+        lines.append("    export TRANSFORMERS_OFFLINE=1")
+        lines.append("    export HF_DATASETS_OFFLINE=1")
+        lines.append("fi")
+        lines.append("export VLLM_NO_USAGE_STATS=1")
+    elif is_compute:
+        lines.append("# Compute node — containerized VLLM runtime")
+        lines.append("# Host venv activation is skipped; the prepared container home is used instead.")
         lines.append('if [ -z "${HF_HUB_OFFLINE:-}" ]; then')
         lines.append("    export HF_HUB_OFFLINE=1")
         lines.append("    export TRANSFORMERS_OFFLINE=1")
@@ -53,6 +68,126 @@ def _build_env_preamble(execution: SlurmExecutionConfig, *, is_compute: bool) ->
         )
 
     return "\n".join(lines)
+
+
+def _build_container_helper_block(execution: SlurmExecutionConfig) -> str:
+    """Build shell helpers for Apptainer-family VLLM execution."""
+    return dedent(f"""\
+        # Containerized VLLM runtime helpers
+        OPENJURY_CONTAINER_IMAGE="${{OPENJURY_CONTAINER_IMAGE:-{execution.container_image}}}"
+        OPENJURY_CONTAINER_HOME="${{OPENJURY_CONTAINER_HOME:-{execution.container_home}}}"
+
+        _openjury_container_bin() {{
+            if command -v apptainer >/dev/null 2>&1; then
+                echo apptainer
+                return 0
+            fi
+            if command -v singularity >/dev/null 2>&1; then
+                echo singularity
+                return 0
+            fi
+            echo "ERROR: OPENJURY container runtime is enabled but neither 'apptainer' nor 'singularity' is available." >&2
+            return 1
+        }}
+
+        _openjury_container_exec_script() {{
+            local script_path=$1
+            if [ -z "${{OPENJURY_CONTAINER_IMAGE:-}}" ]; then
+                echo "ERROR: Container runtime is enabled but OPENJURY_CONTAINER_IMAGE is not set." >&2
+                exit 1
+            fi
+            if [ ! -f "$OPENJURY_CONTAINER_IMAGE" ]; then
+                echo "ERROR: Container image not found: $OPENJURY_CONTAINER_IMAGE" >&2
+                exit 1
+            fi
+            if [ -z "${{OPENJURY_CONTAINER_HOME:-}}" ]; then
+                echo "ERROR: Container runtime is enabled but OPENJURY_CONTAINER_HOME is not set." >&2
+                exit 1
+            fi
+            mkdir -p "$OPENJURY_CONTAINER_HOME"
+            if [ ! -x "$OPENJURY_CONTAINER_HOME/.local/bin/openjury-evaluate" ]; then
+                echo "ERROR: OpenJury is not installed in container home $OPENJURY_CONTAINER_HOME. Run 'openjury-container-prepare' first." >&2
+                exit 1
+            fi
+
+            local container_bin
+            container_bin="$(_openjury_container_bin)"
+            local -a bind_args
+            bind_args=(
+                -B "{execution.project_dir}:{execution.project_dir}"
+                -B "{execution.work_dir}:{execution.work_dir}"
+                -B "{execution.logs_dir}:{execution.logs_dir}"
+                -B "$OPENJURY_CONTAINER_HOME:$OPENJURY_CONTAINER_HOME"
+            )
+            if [ -n "${{HF_HOME:-}}" ]; then
+                mkdir -p "$HF_HOME"
+                bind_args+=(-B "$HF_HOME:$HF_HOME")
+            fi
+            if [ -n "${{OPENJURY_DATA:-}}" ]; then
+                mkdir -p "$OPENJURY_DATA"
+                bind_args+=(-B "$OPENJURY_DATA:$OPENJURY_DATA")
+            fi
+
+            for cert_var in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE; do
+                cert_path="${{!cert_var:-}}"
+                if [ -n "$cert_path" ] && [ ! -f "$cert_path" ]; then
+                    unset "$cert_var"
+                fi
+            done
+            if [ -n "${{SSL_CERT_DIR:-}}" ] && [ ! -d "$SSL_CERT_DIR" ]; then
+                unset SSL_CERT_DIR
+            fi
+
+            HOME="$OPENJURY_CONTAINER_HOME" \\
+            HF_HOME="${{HF_HOME:-}}" \\
+            HF_TOKEN="${{HF_TOKEN:-}}" \\
+            OPENJURY_DATA="${{OPENJURY_DATA:-}}" \\
+            HF_HUB_OFFLINE="${{HF_HUB_OFFLINE:-1}}" \\
+            TRANSFORMERS_OFFLINE="${{TRANSFORMERS_OFFLINE:-1}}" \\
+            HF_DATASETS_OFFLINE="${{HF_DATASETS_OFFLINE:-1}}" \\
+            VLLM_NO_USAGE_STATS="${{VLLM_NO_USAGE_STATS:-1}}" \\
+            "$container_bin" exec --nv --home "$OPENJURY_CONTAINER_HOME:$OPENJURY_CONTAINER_HOME" "${{bind_args[@]}}" "$OPENJURY_CONTAINER_IMAGE" \\
+                bash -lc "export PATH=\\"\\$HOME/.local/bin:\\$PATH\\"; cd \\"{execution.project_dir}\\"; bash \\"$script_path\\""
+        }}
+    """)
+
+
+def _should_use_vllm_container(
+    execution: SlurmExecutionConfig,
+    model: str | None,
+    *,
+    is_compute: bool,
+) -> bool:
+    """Return True when a compute-node VLLM job should run in Apptainer."""
+    return bool(
+        is_compute
+        and execution.container_runtime == "apptainer"
+        and is_vllm_model(model)
+    )
+
+
+def _wrap_compute_command(
+    command: str,
+    *,
+    use_container: bool,
+    script_dir: str | None = None,
+) -> str:
+    """Wrap a compute command in a temp script executed inside the container."""
+    if not use_container:
+        return command
+    if not script_dir:
+        raise ValueError("script_dir is required when containerized execution is enabled.")
+    return (
+        f'OPENJURY_CONTAINER_SCRIPT=$(mktemp "{script_dir}/openjury_container_cmd.XXXXXX.sh")\n'
+        'trap \'rm -f "$OPENJURY_CONTAINER_SCRIPT"\' EXIT\n'
+        'cat > "$OPENJURY_CONTAINER_SCRIPT" <<\'__OPENJURY_CONTAINER_CMD__\'\n'
+        'set -euo pipefail\n\n'
+        f'{command.rstrip()}\n'
+        '__OPENJURY_CONTAINER_CMD__\n'
+        '_openjury_container_exec_script "$OPENJURY_CONTAINER_SCRIPT"\n'
+        'trap - EXIT\n'
+        'rm -f "$OPENJURY_CONTAINER_SCRIPT"'
+    )
 
 
 SBATCH_HEADER = """\
@@ -81,6 +216,7 @@ echo "  GPUs: ${{CUDA_VISIBLE_DEVICES:-not set}}"
 echo "═══════════════════════════════════════════════════════"
 
 {env_preamble}
+{container_helpers}
 
 cd {project_dir}
 
@@ -111,7 +247,12 @@ mkdir -p {work_dir} {logs_dir}
 """
 
 
-def _render_header(job: Any, execution: SlurmExecutionConfig) -> str:
+def _render_header(
+    job: Any,
+    execution: SlurmExecutionConfig,
+    *,
+    use_container: bool = False,
+) -> str:
     extra = "\n".join(f"#SBATCH {line}" for line in job.extra_sbatch)
     gres_line = f"#SBATCH --gres=gpu:{job.n_gpus}\n" if job.n_gpus > 0 else ""
     return SBATCH_HEADER.format(
@@ -126,7 +267,8 @@ def _render_header(job: Any, execution: SlurmExecutionConfig) -> str:
         time=job.time or execution.time_generate,
         qos=job.qos,
         extra_sbatch=extra,
-        env_preamble=_build_env_preamble(execution, is_compute=True),
+        env_preamble=_build_env_preamble(execution, is_compute=True, use_container=use_container),
+        container_helpers=_build_container_helper_block(execution) if use_container else "",
         project_dir=execution.project_dir,
         work_dir=execution.work_dir,
     )
@@ -190,8 +332,9 @@ def _generate_step_script(
     local: bool = True,
 ) -> str:
     """Render a single-model generation script."""
+    use_container = _should_use_vllm_container(execution, model, is_compute=local)
     header = (
-        _render_header(job, execution)
+        _render_header(job, execution, use_container=use_container)
         if local
         else _render_local_header(job.job_name, execution, model)
     )
@@ -219,7 +362,11 @@ def _generate_step_script(
         parts.append(f"    --quantization {quantization}")
     else:
         parts[-1] = parts[-1].rstrip(" \\")
-    cmd = "\n".join(parts)
+    cmd = _wrap_compute_command(
+        "\n".join(parts),
+        use_container=use_container,
+        script_dir=execution.work_dir,
+    )
 
     body = dedent(f"""\
         # ── Generate Completions ──────────────────────────────────
@@ -250,12 +397,17 @@ def _arena_step_script(
     if not isinstance(task, ArenaConfig):
         raise TypeError("Arena step rendering requires an ArenaConfig task.")
 
+    use_container = _should_use_vllm_container(plan.execution, task.judge.model, is_compute=local)
     header = (
-        _render_header(job, plan.execution)
+        _render_header(job, plan.execution, use_container=use_container)
         if local
         else _render_local_header(job.job_name, plan.execution, task.judge.model)
     )
-    cmd = f'openjury-evaluate arena --config "{config_path}" --stage "{stage}"'
+    cmd = _wrap_compute_command(
+        f'openjury-evaluate arena --config "{config_path}" --stage "{stage}"',
+        use_container=use_container,
+        script_dir=plan.execution.work_dir,
+    )
     model_list_str = "\n".join(
         f'echo "  [{i+1}] {_model_name(model)}"'
         for i, model in enumerate(task.models)
@@ -295,12 +447,17 @@ def _agreement_step_script(
     if not isinstance(task, AgreementConfig):
         raise TypeError("Agreement step rendering requires an AgreementConfig task.")
 
+    use_container = _should_use_vllm_container(plan.execution, task.judge.model, is_compute=local)
     header = (
-        _render_header(job, plan.execution)
+        _render_header(job, plan.execution, use_container=use_container)
         if local
         else _render_local_header(job.job_name, plan.execution, task.judge.model)
     )
-    cmd = f'openjury-evaluate agreement --config "{config_path}" --stage "{stage}"'
+    cmd = _wrap_compute_command(
+        f'openjury-evaluate agreement --config "{config_path}" --stage "{stage}"',
+        use_container=use_container,
+        script_dir=plan.execution.work_dir,
+    )
 
     body = dedent(f"""\
         # ── Agreement Evaluation (human vs judge) ────────────────
@@ -335,8 +492,9 @@ def _annotate_step_script(
     if not isinstance(task, AnnotateConfig):
         raise TypeError("Annotate step rendering requires an AnnotateConfig task.")
 
+    use_container = _should_use_vllm_container(plan.execution, task.judge.model, is_compute=local)
     if local:
-        header = _render_header(job, plan.execution)
+        header = _render_header(job, plan.execution, use_container=use_container)
     else:
         api_models = [task.judge.model]
         if (
@@ -347,7 +505,11 @@ def _annotate_step_script(
             api_models.append(task.challenger.name)
         header = _render_local_header_for_models(job.job_name, plan.execution, api_models)
 
-    cmd = f'openjury-evaluate annotate --config "{config_path}"'
+    cmd = _wrap_compute_command(
+        f'openjury-evaluate annotate --config "{config_path}"',
+        use_container=use_container,
+        script_dir=plan.execution.work_dir,
+    )
     challenger_line = (
         f'echo "Challenger:        {task.challenger.name}"\n'
         if task.challenger is not None and task.challenger.name

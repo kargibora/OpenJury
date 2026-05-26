@@ -10,7 +10,10 @@ model in the pipeline can reuse the same GPUs.
 from __future__ import annotations
 
 import pandas as pd
-from langchain.prompts import ChatPromptTemplate
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+except ImportError:  # pragma: no cover - compatibility with older LangChain
+    from langchain.prompts import ChatPromptTemplate
 
 from openjury.models.config import ModelConfig
 from openjury.models.factory import make_model

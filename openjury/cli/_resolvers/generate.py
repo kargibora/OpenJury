@@ -161,6 +161,9 @@ def resolve_generate_cli(
             detach=bool(getattr(args, "detach", False)),
             slurm_output_dir=getattr(args, "slurm_output_dir", "slurm_scripts"),
             tag=getattr(args, "slurm_tag", None),
+            container_runtime=getattr(args, "slurm_container_runtime", None),
+            container_image=getattr(args, "slurm_container_image", None),
+            container_home=getattr(args, "slurm_container_home", None),
             warn_output_dir_semantics=True,
         )
 

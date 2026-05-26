@@ -122,6 +122,22 @@ def main(argv: list[str] | None = None) -> None:
             "(e.g. '04:00:00'). Overrides $TIME_LIMIT env var."
         ),
     )
+    parser.add_argument(
+        "--slurm_container_runtime",
+        choices=["none", "apptainer"],
+        default=None,
+        help="With --slurm: override the container runtime for eligible compute jobs.",
+    )
+    parser.add_argument(
+        "--slurm_container_image",
+        default=None,
+        help="With --slurm: override the configured Apptainer/Singularity image path.",
+    )
+    parser.add_argument(
+        "--slurm_container_home",
+        default=None,
+        help="With --slurm: override the persistent writable container home.",
+    )
 
     args = parser.parse_args(argv)
     if args.submit and not args.slurm:
@@ -132,30 +148,32 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--detach requires --submit.")
     resolved = resolve_agreement_cli(parser, args, argv)
 
-    # ── Pre-flight dataset check ──────────────────────────────────────
-    # Verify the dataset is available (and trigger download if needed)
-    # *before* submitting a SLURM job that has no internet access.
-    logger.info(
-        "Pre-flight: verifying dataset %r is available locally…",
-        resolved.config.dataset,
-    )
-    try:
-        load_dataset(resolved.config.dataset, n=5)
-        logger.info("Pre-flight: dataset %r OK.", resolved.config.dataset)
-    except (FileNotFoundError, KeyError) as exc:
-        parser.error(
-            f"Dataset {resolved.config.dataset!r} is not available and could "
-            f"not be downloaded: {exc}\n"
-            f"Ensure the dataset is cached locally before submitting a SLURM job."
-        )
-    except Exception as exc:
-        parser.error(
-            f"Dataset {resolved.config.dataset!r} failed to load: "
-            f"{type(exc).__name__}: {exc}\n"
-            f"Fix the dataset loader before submitting."
-        )
-
     if resolved.slurm_forward is not None:
+        # ── Pre-flight dataset check ──────────────────────────────────
+        # Verify the dataset is available (and trigger download if
+        # needed) *before* submitting a SLURM job that has no internet
+        # access. Local and already-running compute-node invocations
+        # should skip this check.
+        logger.info(
+            "Pre-flight: verifying dataset %r is available locally…",
+            resolved.config.dataset,
+        )
+        try:
+            load_dataset(resolved.config.dataset, n=5)
+            logger.info("Pre-flight: dataset %r OK.", resolved.config.dataset)
+        except (FileNotFoundError, KeyError) as exc:
+            parser.error(
+                f"Dataset {resolved.config.dataset!r} is not available and could "
+                f"not be downloaded: {exc}\n"
+                f"Ensure the dataset is cached locally before submitting a SLURM job."
+            )
+        except Exception as exc:
+            parser.error(
+                f"Dataset {resolved.config.dataset!r} failed to load: "
+                f"{type(exc).__name__}: {exc}\n"
+                f"Fix the dataset loader before submitting."
+            )
+
         if resolved.slurm_forward.warn_output_dir_semantics:
             logger.warning(
                 "--slurm forwarding does not preserve local agreement --output_dir semantics "

@@ -154,6 +154,22 @@ def main(argv: list[str] | None = None):
             "directory name. Defaults to an auto-generated timestamp."
         ),
     )
+    parser.add_argument(
+        "--slurm_container_runtime",
+        choices=["none", "apptainer"],
+        default=None,
+        help="With --slurm: override the container runtime for eligible compute jobs.",
+    )
+    parser.add_argument(
+        "--slurm_container_image",
+        default=None,
+        help="With --slurm: override the configured Apptainer/Singularity image path.",
+    )
+    parser.add_argument(
+        "--slurm_container_home",
+        default=None,
+        help="With --slurm: override the persistent writable container home.",
+    )
 
     args = parser.parse_args(argv)
     resolved = resolve_generate_cli(parser, args, argv)

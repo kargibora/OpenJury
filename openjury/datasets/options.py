@@ -24,8 +24,10 @@ class DatasetOptions:
     def loader_kwargs(self) -> dict[str, object]:
         """Build kwargs for ``openjury.datasets.load_dataset``."""
         kwargs: dict[str, object] = {}
-        if self.language:
-            kwargs["language"] = self.language
+        # Always forward language so loaders with non-None defaults
+        # (e.g. comparia → "fr") receive an explicit None when the
+        # user wants *all* languages.
+        kwargs["language"] = self.language
         if self.seed != 42:
             kwargs["seed"] = self.seed
         if self.balance_by:

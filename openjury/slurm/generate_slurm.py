@@ -80,11 +80,13 @@ from textwrap import dedent
 from openjury._logging import logger
 from openjury.arena.config import JudgeConfig, ModelEntry
 from openjury.cli_args import add_arena_pipeline_args, parse_kwargs
+from openjury.container_support import resolve_container_settings
 from openjury.models.utils import (
     is_local_provider,
     needs_network,
     provider_from_model,
 )
+from openjury.project_paths import normalize_project_dir
 from openjury.slurm import config_resolver as slurm_config_resolver
 from openjury.slurm import modes as slurm_modes
 from openjury.slurm.plans import (
@@ -107,43 +109,6 @@ def _cli_or_env(cli_val: str | None, env_name: str, default: str | None = None) 
     if cli_val is not None:
         return cli_val
     return _env_mod.get(env_name, default)
-
-
-def _is_project_root(path: Path) -> bool:
-    """Return True when *path* looks like the OpenJury repo root."""
-    return (
-        path.is_dir()
-        and (path / "pyproject.toml").is_file()
-        and (path / "openjury").is_dir()
-    )
-
-
-def _normalize_project_dir(path_str: str) -> str:
-    """Normalize an OpenJury project directory.
-
-    Accepts either the repo root itself or a wrapper directory that contains
-    exactly one immediate child repo root. Raises early if the path still does
-    not resolve to a usable OpenJury project root.
-    """
-    candidate = Path(path_str).expanduser().resolve()
-    if _is_project_root(candidate):
-        return str(candidate)
-
-    child_matches = [child for child in candidate.iterdir() if _is_project_root(child)]
-    if len(child_matches) == 1:
-        resolved = child_matches[0]
-        logger.warning(
-            "Resolved OPENJURY project dir %s -> %s based on nested pyproject/openjury package",
-            candidate,
-            resolved,
-        )
-        return str(resolved)
-
-    raise EnvironmentError(
-        "OPENJURY project dir is not a valid repo root: "
-        f"{candidate}. Expected a directory containing both pyproject.toml "
-        "and openjury/."
-    )
 
 
 def _resolve_gpus(model: str, cli_gpus: int, default_gpus: int) -> int:
@@ -399,6 +364,12 @@ def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
     account = _cli_or_env(args.account, "ACCOUNT") or ""
     time_generate = _cli_or_env(args.time_generate, "TIME_LIMIT") or ""
     time_judge = _cli_or_env(args.time_judge, "TIME_LIMIT") or ""
+    container_runtime, container_image, container_home = resolve_container_settings(
+        cli_runtime=getattr(args, "container_runtime", None),
+        cli_image=getattr(args, "container_image", None),
+        cli_home=getattr(args, "container_home", None),
+        env_get=_env_mod.get,
+    )
 
     user_work = _env_mod.require("USER_WORK_DIR")
     slurm_work = _env_mod.get(
@@ -411,7 +382,7 @@ def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
         "OPENJURY_PROJECT_DIR",
         auto_project,
     )
-    project_dir = _normalize_project_dir(project_dir)
+    project_dir = normalize_project_dir(project_dir)
 
     tag = getattr(args, "tag", None) or datetime.now().strftime("%Y%m%d_%H%M%S")
     short_models = (
@@ -435,6 +406,9 @@ def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
         project_dir=project_dir,
         work_dir=work_dir,
         logs_dir="",
+        container_runtime=container_runtime,
+        container_image=container_image,
+        container_home=container_home,
     )
     return SlurmRunPlan(task=task, execution=execution)
 
@@ -635,6 +609,31 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--time_judge", default=None,
         help="Wall time for judge job. Default: $TIME_LIMIT.",
+    )
+    parser.add_argument(
+        "--container_runtime",
+        choices=["none", "apptainer"],
+        default=None,
+        help=(
+            "Container runtime for eligible compute-node jobs. "
+            "Default: $OPENJURY_CONTAINER_RUNTIME or none."
+        ),
+    )
+    parser.add_argument(
+        "--container_image",
+        default=None,
+        help=(
+            "Path to an Apptainer/Singularity image (.sif). "
+            "Default: $OPENJURY_CONTAINER_IMAGE."
+        ),
+    )
+    parser.add_argument(
+        "--container_home",
+        default=None,
+        help=(
+            "Persistent writable home used inside the container. "
+            "Default: $OPENJURY_CONTAINER_HOME."
+        ),
     )
     parser.add_argument("--qos", default="normal")
 

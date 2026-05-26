@@ -8,3 +8,4 @@
 {completion_B}
 
 Compare both completions. Score each on every criterion, then state your overall preference.
+Start your response with the JSON scores immediately.

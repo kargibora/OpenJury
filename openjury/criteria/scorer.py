@@ -116,7 +116,8 @@ class CriteriaScorer:
             )
 
         explanation_block = (
-            "Before providing scores, briefly explain your reasoning for each criterion."
+            "Output the JSON scores first. After the closing ``` fence, briefly explain "
+            "your reasoning for each criterion."
             if provide_explanation
             else "Provide ONLY the JSON output, no explanation needed."
         )
@@ -218,10 +219,13 @@ class CriteriaScorer:
         if isinstance(value, (int, float)):
             return float(value)
         if isinstance(value, str):
-            match = re.search(r"-?\d+(?:\.\d+)?", value.strip())
-            if match:
-                return float(match.group(0))
-            raise ValueError(f"Could not parse numeric score from string: {value!r}")
+            text = value.strip()
+            if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+                return float(text)
+            raise ValueError(
+                "Could not parse a strict numeric score from string: "
+                f"{value!r}"
+            )
         if isinstance(value, dict):
             for key in ("score", "value", "rating"):
                 if key in value:
@@ -577,35 +581,10 @@ class CriteriaScorer:
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
-        # Last resort: try regex for individual score patterns
-        scores_a, scores_b = {}, {}
-        for cname in self.criteria.criterion_names:
-            match_a = re.search(
-                rf'(?:scores?_?A|completion_?A).*?{re.escape(cname)}.*?(\d+(?:\.\d+)?)',
-                raw_output, re.IGNORECASE | re.DOTALL,
-            )
-            match_b = re.search(
-                rf'(?:scores?_?B|completion_?B).*?{re.escape(cname)}.*?(\d+(?:\.\d+)?)',
-                raw_output, re.IGNORECASE | re.DOTALL,
-            )
-            if match_a:
-                scores_a[cname] = float(match_a.group(1))
-            if match_b:
-                scores_b[cname] = float(match_b.group(1))
-
-        pref_match = re.search(r'preference["\s:]*["\']?(A|B|tie)', raw_output, re.IGNORECASE)
-        pref = 0.5
-        if pref_match:
-            p = pref_match.group(1).upper()
-            pref = 0.0 if p == "A" else 1.0 if p == "B" else 0.5
-
-        if scores_a or scores_b:
-            for cname in self.criteria.criterion_names:
-                scores_a.setdefault(cname, float("nan"))
-                scores_b.setdefault(cname, float("nan"))
-            return {"scores_A": scores_a, "scores_B": scores_b, "preference": pref}
-
-        logger.warning("Could not parse pairwise criteria output: %s", raw_output[:200])
+        logger.warning(
+            "Could not parse pairwise criteria output as strict JSON: %s",
+            raw_output[:200],
+        )
         return default
 
     def _parse_pairwise_legacy(self, raw_output: str) -> dict:

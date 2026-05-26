@@ -7,6 +7,7 @@ performed post-hoc via separate scripts.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -90,15 +91,50 @@ def _agreement_row_from_match(match: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _is_nan_scalar(value: Any) -> bool:
+    try:
+        return bool(math.isnan(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _dict_has_nan_value(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(_is_nan_scalar(item) for item in value.values())
+
+
+def _drop_nan_agreement_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Drop rows whose preferences or score dicts contain NaN values."""
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for row in rows:
+        if _is_nan_scalar(row.get("human_pref")) or _is_nan_scalar(row.get("judge_pref")):
+            dropped += 1
+            continue
+        if any(
+            key.startswith("scores_") and _dict_has_nan_value(value)
+            for key, value in row.items()
+        ):
+            dropped += 1
+            continue
+        kept.append(row)
+    return kept, dropped
+
+
 def _annotate_payload_to_agreement_payload(
     config: AgreementConfig,
     annotation_payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Adapt canonical annotate output into the persisted agreement artifact shape."""
     matches = list(annotation_payload.get("matches", []))
-    per_sample = [
-        _agreement_row_from_match(match) for match in matches
-    ]
+    per_sample = [_agreement_row_from_match(match) for match in matches]
+    per_sample, dropped_nan_rows = _drop_nan_agreement_rows(per_sample)
+    if dropped_nan_rows:
+        logger.warning(
+            "Dropped %d agreement row(s) with NaN preferences/scores before saving.",
+            dropped_nan_rows,
+        )
     return {
         "metadata": {
             "dataset": config.dataset,
@@ -106,7 +142,9 @@ def _annotate_payload_to_agreement_payload(
             "judge_mode": config.judge.mode,
             "criteria": config.criteria,
             "swap_debiasing": not config.judge.no_swap,
+            "n_samples_raw": len(matches),
             "n_samples": len(per_sample),
+            "n_samples_dropped_nan": dropped_nan_rows,
         },
         "criterion_names": list(annotation_payload.get("criterion_names", [])),
         "criteria_definition": annotation_payload.get("criteria_definition", {}),

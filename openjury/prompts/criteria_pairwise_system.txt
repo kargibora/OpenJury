@@ -17,3 +17,6 @@ IMPORTANT:
 - Do NOT let position (A vs B) bias your scores.
 - Base your preference on the criteria scores and overall quality.
 - Wrap your JSON in ```json ... ``` tags.
+- Your response MUST begin with ```json on the first line.
+- Do NOT write any prose, analysis, or bullets before the JSON block.
+- If you include any explanation, put it AFTER the JSON block, never before it.

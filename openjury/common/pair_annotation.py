@@ -301,6 +301,26 @@ def score_pairs_pairwise(
 
             scores_a = dict(ms_a.scores)
             preference = float(scores_a.pop("__preference__", 0.5))
+
+            # Unpack per-swap scores from reserved cache keys
+            pref_orig = scores_a.pop("__pref_orig__", None)
+            pref_swap = scores_a.pop("__pref_swap__", None)
+            sa_orig, sa_swap = {}, {}
+            sb_orig, sb_swap = {}, {}
+            scores_b_raw = dict(ms_b.scores)
+            # Extract from scores_a cache
+            for k in list(scores_a):
+                if k.startswith("__orig__") and k.endswith("__"):
+                    sa_orig[k[8:-2]] = scores_a.pop(k)
+                elif k.startswith("__swap__") and k.endswith("__"):
+                    sa_swap[k[8:-2]] = scores_a.pop(k)
+            # Extract from scores_b cache
+            for k in list(scores_b_raw):
+                if k.startswith("__orig__") and k.endswith("__"):
+                    sb_orig[k[8:-2]] = scores_b_raw.pop(k)
+                elif k.startswith("__swap__") and k.endswith("__"):
+                    sb_swap[k[8:-2]] = scores_b_raw.pop(k)
+
             out.append(
                 PairJudgement(
                     sample_id=pair.sample_id,
@@ -308,10 +328,16 @@ def score_pairs_pairwise(
                     model_a=pair.model_a,
                     model_b=pair.model_b,
                     scores_a=scores_a,
-                    scores_b=dict(ms_b.scores),
+                    scores_b=scores_b_raw,
                     preference=preference,
                     raw_judge_output=ms_a.raw_judge_output,
                     raw_judge_output_swapped=ms_b.raw_judge_output or None,
+                    scores_a_original=sa_orig or None,
+                    scores_b_original=sb_orig or None,
+                    preference_original=float(pref_orig) if pref_orig is not None else None,
+                    scores_a_swapped=sa_swap or None,
+                    scores_b_swapped=sb_swap or None,
+                    preference_swapped=float(pref_swap) if pref_swap is not None else None,
                 )
             )
 
@@ -329,12 +355,33 @@ def score_pairs_pairwise(
         ):
             cache_entries: list[ModelScore] = []
             for pair, ann in zip(pairs, out):
+                scores_a_cache_fb: dict[str, float] = {
+                    **ann.scores_a,
+                    "__preference__": ann.preference,
+                }
+                scores_b_cache_fb: dict[str, float] = dict(ann.scores_b)
+                if ann.preference_original is not None:
+                    scores_a_cache_fb["__pref_orig__"] = ann.preference_original
+                if ann.preference_swapped is not None:
+                    scores_a_cache_fb["__pref_swap__"] = ann.preference_swapped
+                if ann.scores_a_original:
+                    for k, v in ann.scores_a_original.items():
+                        scores_a_cache_fb[f"__orig__{k}__"] = v
+                if ann.scores_a_swapped:
+                    for k, v in ann.scores_a_swapped.items():
+                        scores_a_cache_fb[f"__swap__{k}__"] = v
+                if ann.scores_b_original:
+                    for k, v in ann.scores_b_original.items():
+                        scores_b_cache_fb[f"__orig__{k}__"] = v
+                if ann.scores_b_swapped:
+                    for k, v in ann.scores_b_swapped.items():
+                        scores_b_cache_fb[f"__swap__{k}__"] = v
                 cache_entries.append(
                     ModelScore(
                         model=pair.model_a,
                         instruction_index=pair.instruction_index,
                         sample_id=pair.sample_id,
-                        scores={**ann.scores_a, "__preference__": ann.preference},
+                        scores=scores_a_cache_fb,
                         completion=pair.completion_a,
                         raw_judge_output=ann.raw_judge_output,
                     )
@@ -344,7 +391,7 @@ def score_pairs_pairwise(
                         model=pair.model_b,
                         instruction_index=pair.instruction_index,
                         sample_id=pair.sample_id,
-                        scores=ann.scores_b,
+                        scores=scores_b_cache_fb,
                         completion=pair.completion_b,
                         raw_judge_output=ann.raw_judge_output_swapped or "",
                     )
@@ -430,12 +477,36 @@ def score_pairs_pairwise(
     if cache_config is not None:
         cache_entries: list[ModelScore] = []
         for pair, ann in zip(pairs, out):
+            # Pack per-swap scores into the scores dict with reserved prefixes
+            # so they survive the cache round-trip.
+            scores_a_cache: dict[str, float] = {
+                **ann.scores_a,
+                "__preference__": ann.preference,
+            }
+            scores_b_cache: dict[str, float] = dict(ann.scores_b)
+            if ann.preference_original is not None:
+                scores_a_cache["__pref_orig__"] = ann.preference_original
+            if ann.preference_swapped is not None:
+                scores_a_cache["__pref_swap__"] = ann.preference_swapped
+            if ann.scores_a_original:
+                for k, v in ann.scores_a_original.items():
+                    scores_a_cache[f"__orig__{k}__"] = v
+            if ann.scores_a_swapped:
+                for k, v in ann.scores_a_swapped.items():
+                    scores_a_cache[f"__swap__{k}__"] = v
+            if ann.scores_b_original:
+                for k, v in ann.scores_b_original.items():
+                    scores_b_cache[f"__orig__{k}__"] = v
+            if ann.scores_b_swapped:
+                for k, v in ann.scores_b_swapped.items():
+                    scores_b_cache[f"__swap__{k}__"] = v
+
             cache_entries.append(
                 ModelScore(
                     model=pair.model_a,
                     instruction_index=pair.instruction_index,
                     sample_id=pair.sample_id,
-                    scores={**ann.scores_a, "__preference__": ann.preference},
+                    scores=scores_a_cache,
                     completion=pair.completion_a,
                     raw_judge_output=ann.raw_judge_output,
                 )
@@ -445,7 +516,7 @@ def score_pairs_pairwise(
                     model=pair.model_b,
                     instruction_index=pair.instruction_index,
                     sample_id=pair.sample_id,
-                    scores=ann.scores_b,
+                    scores=scores_b_cache,
                     completion=pair.completion_b,
                     raw_judge_output=ann.raw_judge_output_swapped or "",
                 )

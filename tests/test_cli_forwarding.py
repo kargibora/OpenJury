@@ -31,6 +31,9 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
         "--seed", "7",
         "--slurm",
         "--slurm_output_dir", "slurm_scripts",
+        "--slurm_container_runtime", "apptainer",
+        "--slurm_container_image", "/containers/vllm.sif",
+        "--slurm_container_home", "/container-home",
         "--stage", "analyze",
     ])
 
@@ -39,6 +42,9 @@ def test_agreement_cli_slurm_forwarding_uses_agreement_mode(monkeypatch):
     assert "--config" in argv
     assert "--stage" in argv
     assert argv[argv.index("--stage") + 1] == "analyze"
+    assert argv[argv.index("--container_runtime") + 1] == "apptainer"
+    assert argv[argv.index("--container_image") + 1] == "/containers/vllm.sif"
+    assert argv[argv.index("--container_home") + 1] == "/container-home"
     assert "--dataset" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "lmsys"
@@ -69,11 +75,17 @@ def test_generate_cli_slurm_forwarding_includes_dataset_selection(monkeypatch, t
         "--language", "en",
         "--seed", "13",
         "--slurm",
+        "--slurm_container_runtime", "apptainer",
+        "--slurm_container_image", "/containers/vllm.sif",
+        "--slurm_container_home", "/container-home",
     ])
 
     argv = captured["argv"]
     assert argv[:2] == ["--mode", "generate"]
     assert "--config" in argv
+    assert argv[argv.index("--container_runtime") + 1] == "apptainer"
+    assert argv[argv.index("--container_image") + 1] == "/containers/vllm.sif"
+    assert argv[argv.index("--container_home") + 1] == "/container-home"
     assert "--dataset" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "alpaca-eval"
@@ -106,6 +118,9 @@ def test_arena_cli_slurm_forwarding_uses_unified_entry(monkeypatch):
         "--gen-kwargs", "top_k=33",
         "--stage", "annotate",
         "--slurm",
+        "--slurm_container_runtime", "apptainer",
+        "--slurm_container_image", "/containers/vllm.sif",
+        "--slurm_container_home", "/container-home",
     ])
 
     argv = captured["argv"]
@@ -113,6 +128,9 @@ def test_arena_cli_slurm_forwarding_uses_unified_entry(monkeypatch):
     assert "--config" in argv
     assert "--stage" in argv
     assert argv[argv.index("--stage") + 1] == "annotate"
+    assert argv[argv.index("--container_runtime") + 1] == "apptainer"
+    assert argv[argv.index("--container_image") + 1] == "/containers/vllm.sif"
+    assert argv[argv.index("--container_home") + 1] == "/container-home"
     assert "--models" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "alpaca-eval"
@@ -148,11 +166,17 @@ def test_annotate_cli_slurm_forwarding_uses_annotate_mode(monkeypatch):
         "--pairing_strategy", "all",
         "--n_instructions", "25",
         "--slurm",
+        "--slurm_container_runtime", "apptainer",
+        "--slurm_container_image", "/containers/vllm.sif",
+        "--slurm_container_home", "/container-home",
     ])
 
     argv = captured["argv"]
     assert argv[:2] == ["--mode", "annotate"]
     assert "--config" in argv
+    assert argv[argv.index("--container_runtime") + 1] == "apptainer"
+    assert argv[argv.index("--container_image") + 1] == "/containers/vllm.sif"
+    assert argv[argv.index("--container_home") + 1] == "/container-home"
     assert "--dataset" not in argv
     cfg = captured["config"]
     assert cfg["dataset"] == "lmsys"

@@ -31,9 +31,11 @@ Usage::
 from __future__ import annotations
 
 from collections import defaultdict
+import warnings
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
 from sklearn.linear_model import LogisticRegression
 
 from openjury._logging import logger
@@ -197,6 +199,7 @@ def fit_multi_bt(
     models: list[str],
     matches: list[MatchResult],
     regularization: float = 0.01,
+    tie_strategy: str = "quarter",
 ) -> dict[str, float]:
     """Fit multi-player BT strengths θ_m for each model.
 
@@ -209,31 +212,61 @@ def fit_multi_bt(
         models: List of model names.
         matches: Pairwise match results.
         regularization: L2 penalty.
+        tie_strategy:
+            ``"drop"``    – remove ties (|pref − 0.5| ≤ 0.05) before fitting.
+            ``"half"``    – ties (|pref − 0.5| ≤ 0.05) become half-win /
+                           half-loss evidence.
+            ``"quarter"`` – like ``"half"`` but the tie zone is wider:
+                           |pref − 0.5| ≤ 0.26, so 0.25 and 0.75 are
+                           also treated as ties.
 
     Returns:
         ``{model_name: θ}`` — higher is better.
     """
+    _VALID = {"drop", "half", "quarter"}
+    if tie_strategy not in _VALID:
+        raise ValueError(
+            f"Unsupported tie_strategy={tie_strategy!r}. "
+            f"Expected one of {_VALID}."
+        )
+    tie_eps = 0.26 if tie_strategy == "quarter" else 0.05
+    keep_ties = tie_strategy in {"half", "quarter"}
+
     n_models = len(models)
     model_to_idx = {m: i for i, m in enumerate(models)}
 
     # Build feature matrix: one row per match, one column per model
     rows_X: list[list[float]] = []
     rows_y: list[float] = []
+    rows_w: list[float] = []
+    n_ties = 0
+    n_decisive = 0
 
     for m in matches:
         if m.model_a not in model_to_idx or m.model_b not in model_to_idx:
             continue
-        # Skip ties
-        if abs(m.preference - 0.5) <= 0.05:
-            continue
-
         row = [0.0] * n_models
         row[model_to_idx[m.model_a]] = 1.0
         row[model_to_idx[m.model_b]] = -1.0
-        rows_X.append(row)
+        is_tie = abs(m.preference - 0.5) <= tie_eps
 
+        if is_tie:
+            n_ties += 1
+            if not keep_ties:
+                continue
+            rows_X.append(row.copy())
+            rows_y.append(1.0)
+            rows_w.append(0.5)
+            rows_X.append(row.copy())
+            rows_y.append(0.0)
+            rows_w.append(0.5)
+            continue
+
+        n_decisive += 1
+        rows_X.append(row)
         # y = 1 means model_a wins (preference < 0.5)
         rows_y.append(1.0 if m.preference < 0.5 else 0.0)
+        rows_w.append(1.0)
 
     if len(rows_y) < 2:
         logger.warning("Too few decisive matches (%d) to fit BT strengths", len(rows_y))
@@ -241,6 +274,7 @@ def fit_multi_bt(
 
     X = np.array(rows_X)
     y = np.array(rows_y)
+    sample_weight = np.array(rows_w, dtype=float)
 
     C = 1.0 / max(regularization, 1e-12)
     lr = LogisticRegression(
@@ -249,7 +283,7 @@ def fit_multi_bt(
         max_iter=1000,
         solver="lbfgs",
     )
-    lr.fit(X, y)
+    lr.fit(X, y, sample_weight=sample_weight)
 
     strengths = lr.coef_[0]
     # Center so mean = 0
@@ -257,7 +291,13 @@ def fit_multi_bt(
 
     result = {m: float(strengths[i]) for i, m in enumerate(models)}
 
-    logger.info("BT strengths fitted on %d matches:", len(rows_y))
+    logger.info(
+        "BT strengths fitted on %d training rows (%d decisive matches, %d ties, tie_strategy=%s):",
+        len(rows_y),
+        n_decisive,
+        n_ties,
+        tie_strategy,
+    )
     for m, s in sorted(result.items(), key=lambda x: -x[1]):
         logger.info("  %s: %+.4f", m.rsplit("/", 1)[-1], s)
 
@@ -425,3 +465,197 @@ def fit_dimension_weights(
         pass
 
     return bt.weight_dict(), acc
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Soft-label Bradley-Terry
+# ═════════════════════════════════════════════════════════════════════
+
+
+def _logistic(x: np.ndarray) -> np.ndarray:
+    """Numerically stable logistic sigmoid."""
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
+
+
+def score_gap_array(
+    scores_a: pd.DataFrame,
+    scores_b: pd.DataFrame,
+    dimension_names: list[str],
+    dim_weights: dict[str, float] | None = None,
+) -> np.ndarray:
+    r"""Weighted score gap per comparison.
+
+    .. math::
+
+        \Delta_i = \sum_d w_d \bigl(s^A_{i,d} - s^B_{i,d}\bigr)
+
+    Args:
+        scores_a: ``(n, d)`` DataFrame of model-A rubric scores.
+        scores_b: ``(n, d)`` DataFrame of model-B rubric scores.
+        dimension_names: Ordered list of rubric dimension column names.
+        dim_weights: ``{dim: weight}``.  ``None`` → uniform.
+
+    Returns:
+        ``(n,)`` array of score gaps (positive = A scored higher).
+    """
+    delta = scores_a[dimension_names].values - scores_b[dimension_names].values
+    if dim_weights is not None:
+        w = np.array([dim_weights.get(d, 0.0) for d in dimension_names])
+        w = w / (w.sum() + 1e-12)
+    else:
+        w = np.ones(len(dimension_names)) / len(dimension_names)
+    gap = (delta * w[None, :]).sum(axis=1)
+    return np.nan_to_num(gap, nan=0.0)
+
+
+def compute_soft_labels(
+    scores_a: pd.DataFrame,
+    scores_b: pd.DataFrame,
+    dimension_names: list[str],
+    beta: float,
+    dim_weights: dict[str, float] | None = None,
+) -> np.ndarray:
+    r"""Convert rubric scores into continuous soft preference labels.
+
+    .. math::
+
+        p_i = \sigma\!\bigl(\beta \cdot \Delta_i\bigr)
+
+    where :math:`\Delta_i` is from :func:`score_gap_array`.  Values near
+    0.5 indicate an uncertain comparison; values near 0 or 1 a decisive
+    one.  Convention: *lower* p → model A preferred (matching the arena
+    0.0 = A-wins convention).
+
+    Args:
+        scores_a: ``(n, d)`` rubric scores for model A.
+        scores_b: ``(n, d)`` rubric scores for model B.
+        dimension_names: Ordered rubric dimension names.
+        beta: Temperature — controls how sharply score gaps map to
+            preferences.  0 → all labels ≈ 0.5;  ∞ → hard labels.
+        dim_weights: Per-dimension weights; ``None`` → uniform.
+
+    Returns:
+        ``(n,)`` array of soft labels in (0, 1), clipped to
+        ``[1e-6, 1-1e-6]`` for numerical safety.
+    """
+    gap = score_gap_array(scores_a, scores_b, dimension_names, dim_weights)
+    # Negate gap: positive gap means A is better → preference < 0.5 (A wins)
+    # but σ(β·gap) > 0.5 when gap > 0.  The BT solver interprets
+    # p < 0.5 as "A preferred", so we must negate to stay consistent
+    # with the 0 = A, 1 = B convention used elsewhere.
+    soft = _logistic(beta * gap)
+    return np.clip(soft, 1e-6, 1 - 1e-6)
+
+def fit_softlabel_bt(
+    models: list[str],
+    matches: list[MatchResult],
+    soft_labels: np.ndarray,
+    regularization: float = 0.01,
+) -> dict[str, float]:
+    r"""Fit Bradley-Terry with continuous soft labels via L-BFGS-B.
+
+    Instead of hard binary outcomes, each comparison carries a continuous
+    label :math:`p_i \in (0, 1)`.  The negative log-likelihood is the
+    cross-entropy between :math:`p_i` and :math:`\sigma(\theta_A - \theta_B)`,
+    plus an L2 penalty:
+
+    .. math::
+
+        \mathcal{L}(\theta) =
+            - \sum_i \bigl[ p_i \log\sigma(\Delta\theta_i)
+              + (1-p_i)\log(1-\sigma(\Delta\theta_i)) \bigr]
+            + \tfrac{\lambda}{2}\|\theta\|^2
+
+    Args:
+        models: Ordered list of model names.
+        matches: Pairwise comparisons (only ``model_a`` / ``model_b`` used).
+        soft_labels: ``(n,)`` continuous preferences aligned with *matches*.
+        regularization: L2 penalty λ.
+
+    Returns:
+        ``{model: θ}`` — centred BT strength parameters.
+    """
+    n_models = len(models)
+    idx_map = {m: i for i, m in enumerate(models)}
+
+    rows_X: list[list[float]] = []
+    rows_p: list[float] = []
+    for mi, m in enumerate(matches):
+        if m.model_a not in idx_map or m.model_b not in idx_map:
+            continue
+        row = [0.0] * n_models
+        row[idx_map[m.model_a]] = 1.0
+        row[idx_map[m.model_b]] = -1.0
+        rows_X.append(row)
+        rows_p.append(float(soft_labels[mi]))
+
+    if len(rows_p) < 2:
+        logger.warning("Too few matches (%d) for softlabel BT", len(rows_p))
+        return {m: 0.0 for m in models}
+
+    X = np.array(rows_X)
+    p = np.clip(np.array(rows_p), 1e-6, 1 - 1e-6)
+    lam = regularization
+
+    def _objective(theta: np.ndarray) -> float:
+        logits = X @ theta
+        sig = np.clip(_logistic(logits), 1e-12, 1 - 1e-12)
+        nll = -float(np.sum(p * np.log(sig) + (1.0 - p) * np.log(1.0 - sig)))
+        return nll + 0.5 * lam * float(np.dot(theta, theta))
+
+    def _gradient(theta: np.ndarray) -> np.ndarray:
+        sig = _logistic(X @ theta)
+        return X.T @ (sig - p) + lam * theta
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        res = minimize(
+            _objective, np.zeros(n_models), jac=_gradient,
+            method="L-BFGS-B", options={"maxiter": 1000, "ftol": 1e-10},
+        )
+    theta = res.x
+    theta -= theta.mean()
+
+    result = {m: float(theta[i]) for i, m in enumerate(models)}
+    logger.info(
+        "Soft-label BT fitted on %d comparisons (regularization=%.4f):",
+        len(rows_p), regularization,
+    )
+    return result
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Elo evaluation (comparing two Elo dicts)
+# ═════════════════════════════════════════════════════════════════════
+
+
+def evaluate_elo(
+    elo_a: dict[str, float],
+    elo_b: dict[str, float],
+) -> dict[str, float]:
+    """Compare two Elo rating dicts on their common models.
+
+    Args:
+        elo_a: First Elo dict (e.g. judge Elo).
+        elo_b: Second Elo dict (e.g. human Elo, treated as reference).
+
+    Returns:
+        ``{"mae": …, "spearman_rho": …, "kendall_tau": …, "n_models": …}``
+    """
+    common = sorted(set(elo_a) & set(elo_b))
+    if len(common) < 3:
+        return {
+            "mae": float("nan"),
+            "spearman_rho": float("nan"),
+            "kendall_tau": float("nan"),
+            "n_models": len(common),
+        }
+    a = np.array([elo_a[m] for m in common])
+    b = np.array([elo_b[m] for m in common])
+    return {
+        "mae": float(np.mean(np.abs(a - b))),
+        "spearman_rho": float(sp_stats.spearmanr(a, b).statistic),
+        "kendall_tau": float(sp_stats.kendalltau(a, b).statistic),
+        "n_models": len(common),
+    }

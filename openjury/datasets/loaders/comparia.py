@@ -6,6 +6,7 @@ Converts the ComparIA (ministere-culture/comparia-votes) dataset into
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -16,11 +17,25 @@ from openjury.datasets.registry import DatasetRegistry
 from openjury.datasets.schema import EvalDataset, EvalSample
 
 
+def _hf_hub_offline() -> bool:
+    """Return True when HF-backed loaders should stay strictly local."""
+    for key in (
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+        "HF_DATASETS_OFFLINE",
+        "HF_HUB_LOCAL_FILES_ONLY",
+    ):
+        value = os.environ.get(key)
+        if value and value.strip().lower() not in {"0", "false", "no", "off"}:
+            return True
+    return False
+
+
 @DatasetRegistry.register("comparia")
 def load_comparia(
     *,
     n: int | None = None,
-    language: str = "fr",
+    language: str | None = None,
     single_turn_only: bool = True,
     seed: int = 42,
     **_kwargs,
@@ -52,6 +67,7 @@ def load_comparia(
     repo_path = snapshot_download(
         repo_id="ministere-culture/comparia-votes",
         repo_type="dataset",
+        local_files_only=_hf_hub_offline(),
     )
 
     parquets = list(Path(repo_path).rglob("*.parquet"))

@@ -15,10 +15,10 @@ dependencies = [
     "ipython>=9.5.0",
     "joblib>=1.5.2",
     "jupyter>=1.1.1",
-    "langchain>=0.3.27",
-    "langchain-community>=0.3.29",
-    "langchain-openai>=0.3.32",
-    "langchain-together>=0.3.1",
+    "langchain>=0.3.27,<1",
+    "langchain-community>=0.3.29,<1",
+    "langchain-openai>=0.3.32,<1",
+    "langchain-together>=0.3.1,<1",
     "matplotlib>=3.10.6",
     "numpy>=1.26.0",
     "pandas>=2.3.2",
@@ -26,7 +26,6 @@ dependencies = [
     "rich>=14.1.0",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
-    "slurmpilot @ git+https://github.com/geoalgo/slurmpilot.git@main",
     "tqdm>=4.67.1",
 ]
 
@@ -36,12 +35,13 @@ exclude = ["slurmpilot_scripts*"]
 
 [project.optional-dependencies]
 vllm = [
-    "vllm>=0.17.1,<0.18; sys_platform == 'linux' and python_version < '3.14'",
+    "vllm>=0.19,<0.20; sys_platform == 'linux' and python_version < '3.14'",
     "transformers>=4.55.2,<5",
 ]
 sglang = ["sglang", "transformers>=4.55.2,<5"]
 llamacpp = ["llama-cpp-python>=0.3.0"]
 yaml = ["PyYAML>=6.0"]
+remote = ["slurmpilot @ git+https://github.com/geoalgo/slurmpilot.git@main"]
 dev = ["black>=25.1.0", "pytest>=8.4.2"]
 
 [project.scripts]
@@ -51,6 +51,7 @@ openjury-annotate = "openjury.cli.annotate:main"
 openjury-agreement = "openjury.cli.agreement:main"
 openjury-evaluate = "openjury.cli.evaluate:main"
 openjury-slurm = "openjury.slurm.generate_slurm:main"
+openjury-container-prepare = "openjury.cli.container_prepare:main"
 openjury-migrate-generate-config = "openjury.cli.migrate_generate_config:main"
 openjury-completion-cache = "openjury.cache.completions:_cli"
 openjury-score-cache = "openjury.cache.scores:_cli"

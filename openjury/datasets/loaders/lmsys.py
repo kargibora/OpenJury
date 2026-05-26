@@ -9,6 +9,7 @@ variant under separate dataset names:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -70,9 +71,11 @@ def _flatten_content(content: Any) -> str:
     """Flatten LM Arena content blocks into plain text."""
     if content is None:
         return ""
+    if hasattr(content, "tolist"):
+        content = content.tolist()
     if isinstance(content, str):
         return content.strip()
-    if isinstance(content, list):
+    if isinstance(content, (list, tuple)):
         parts = [_flatten_content(item) for item in content]
         return "\n".join(part for part in parts if part)
     if isinstance(content, dict):
@@ -120,6 +123,20 @@ def _winner_to_pref(winner: Any) -> float:
     return 0.5
 
 
+def _hf_hub_offline() -> bool:
+    """Return True when HF-backed loaders should stay strictly local."""
+    for key in (
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+        "HF_DATASETS_OFFLINE",
+        "HF_HUB_LOCAL_FILES_ONLY",
+    ):
+        value = os.environ.get(key)
+        if value and value.strip().lower() not in {"0", "false", "no", "off"}:
+            return True
+    return False
+
+
 def _load_lmsys_repo(
     *,
     repo_id: str,
@@ -137,6 +154,7 @@ def _load_lmsys_repo(
         repo_id=repo_id,
         repo_type="dataset",
         allow_patterns="*.parquet",
+        local_files_only=_hf_hub_offline(),
     )
 
     parquets = list(Path(repo_path).rglob("*.parquet"))
@@ -172,6 +190,7 @@ def _load_lmsys_repo(
         return list(val) if hasattr(val, "__iter__") else []
 
     samples: list[EvalSample] = []
+    dropped_empty_rows = 0
     for row_idx, (_, row) in enumerate(df.iterrows()):
         conv_a = _to_list(row.get("conversation_a"))
         conv_b = _to_list(row.get("conversation_b"))
@@ -179,6 +198,10 @@ def _load_lmsys_repo(
         instruction = _extract_instruction(conv_a)
         comp_a = _extract_completion(conv_a)
         comp_b = _extract_completion(conv_b)
+
+        if not instruction.strip() or not comp_a.strip() or not comp_b.strip():
+            dropped_empty_rows += 1
+            continue
 
         model_a = str(row.get("model_a", ""))
         model_b = str(row.get("model_b", ""))
@@ -201,6 +224,12 @@ def _load_lmsys_repo(
             )
         )
 
+    if dropped_empty_rows:
+        logger.warning(
+            "Dropped %d %s rows with missing instruction/completion text",
+            dropped_empty_rows,
+            dataset_name,
+        )
     logger.info("Loaded %d %s samples (lang=%s)", len(samples), dataset_name, language)
 
     return EvalDataset(
