@@ -294,7 +294,7 @@ def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
 
     default_gpus = int(_env_mod.get("GPUS_PER_NODE", "1") or "1")
     task = _build_task_config(args, default_gpus=default_gpus)
-    model_names = [model.name for model in getattr(task, "models", [])]
+    model_names = [model.name for model in (getattr(task, "models", None) or [])]
     challenger = getattr(task, "challenger", None)
     challenger_model = getattr(challenger, "name", None)
     if not model_names and challenger_model:
@@ -313,7 +313,10 @@ def build_run_plan_from_env_and_args(args: argparse.Namespace) -> SlurmRunPlan:
     )
     stage = getattr(args, "stage", "all")
     mode = getattr(args, "mode", "arena")
-    any_local_model = any(not needs_network(model.name) for model in getattr(task, "models", []))
+    any_local_model = any(
+        not needs_network(model.name)
+        for model in (getattr(task, "models", None) or [])
+    )
     run_annotate_phase = mode == "annotate"
     annotate_generation_needed = bool(
         run_annotate_phase
